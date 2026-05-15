@@ -17,18 +17,19 @@ dependencies = []
 dev = [
     "pyright>=1.1.409",
     "pytest>=9.0.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
     "pytest-timeout>=2.4.0",
     "ruff>=0.15.13",
     "tomli>=2.4.1",
     "pre-commit>=3.6",
-    "fakeredis>=2.20", 
-    "redis>=5.0", 
+    "fakeredis>=2.20",
+    "redis>=5.0",
 ]
 
 # ruff setup
 [tool.ruff]
 line-length = 88
-extend-exclude = ["tests"]
 
 [tool.ruff.lint]
 select = [
