@@ -7,29 +7,29 @@
 
 **A Python task queue built around structured concurrency and end-to-end type safety.** Jobs have parent-child relationships, failures cancel siblings instead of orphaning them, and type checker catches signature mismatches at `.delay()` call sites. SQLite for local development, Redis for production — same API.
 
-> ⚠️ **Status:** Pre-alpha. Roadmap below.
+> **Status:** pre-alpha, in active development. The API is still moving — see the roadmap below.
 
 ---
 
-## Why another task queue?
+## Why I'm building this
 
-Celery, RQ, Dramatiq, and Arq all share two limitations that TaskQueue is designed to fix:
+I spent a while reading the source of RQ and Arq for a different project, and two things kept bothering me about all of them.
 
-**Jobs float free.** When you `task.delay(...)` in Celery, the job is detached from the code that submitted it. If the calling process dies, the job keeps running. If the job fails, the caller has no idea. If you submit ten jobs and one fails, the other nine keep burning compute. Errors disappear into log files, cancellation is famously unreliable. the mental model is "fire and forget."
+The first is that jobs are detached from the code that submits them. When you call `task.delay(...)` in Celery, the job becomes an orphan: if the caller dies it keeps running, if it fails the caller doesn't find out, and if you submit ten jobs and one fails the other nine keep going. The mental model is "fire and check the logs later." That works at scale but it's a strange default for a language whose normal concurrency model — async/await, exceptions, `with` blocks — is built around exactly the opposite assumption.
 
-**Types are erased at the queue boundary.** `add.delay("oops", "wrong")` is happily accepted by every existing queue library. Your IDE has no idea what arguments a task takes, what `await job.result()` returns, or that you just typo'd a parameter name. The richest type system in mainstream Python is wasted the moment a job crosses the wire.
+The second is that the queue boundary erases types. `add.delay("oops", "wrong")` is accepted by every existing library I tried. Modern Python has `ParamSpec`, `TypeVar`, and `Protocol`; none of those tools show up at the place where you most need them. You lose type checking precisely when you cross processes, which is when bugs hurt the most.
 
-TaskQueue rejects both. Every job is owned by a *scope* that waits for it, propagates its errors, and cancels it if siblings fail. Every task preserves its full signature through `ParamSpec`, so the type checker is as strict at the call site as it is inside the function body.
+This project is my attempt to do both differently. It's also the thing I'm using to get comfortable with the harder parts of async Python and distributed-systems plumbing — distributed locks, pub/sub-vs-polling trade-offs, cooperative cancellation, that kind of thing.
 
-## The three differentiators
+## What's different
 
-**1. Structured concurrency, distributed.** Built on the same model as `asyncio.TaskGroup` and Trio's nurseries, extended across processes and machines. Scopes own jobs. Scope exit waits for all children. Sibling failures cancel the rest. Parent process death cancels children via heartbeat-based reaping. Exceptions propagate up the scope tree as `ExceptionGroup`s, the way real Python errors do.
+**Structured concurrency, distributed.** Built on the same idea as `asyncio.TaskGroup` and Trio's nurseries, extended across processes. Jobs are spawned into a *scope* (`JobGroup`). The scope's `async with` block doesn't exit until every child reaches a terminal state. If one child fails, its siblings are cancelled and the exception propagates up the scope tree. If the process holding the scope dies, a heartbeat-based reaper cancels its children so nothing is orphaned.
 
-**2. End-to-end type safety.** `ParamSpec` and `TypeVar` carry signatures through the decorator. `await job.result()` is correctly typed as the function's return type. Pyright in strict mode is the project's baseline, and the public API is designed to make `# type: ignore` unnecessary.
+**End-to-end type safety.** `@q.task` preserves the wrapped function's signature via `ParamSpec`, so `add.delay(2, 3)` is type-checked against `add`'s signature and `await handle.result()` is correctly typed as `int`. The whole codebase runs under Pyright in strict mode.
 
-**3. Redis backend designed for correctness, not just throughput.** Reliable delivery via per-worker processing lists. Cross-process cancellation that actually works, via pub/sub plus polling fallback. Scope-aware reaping so a dead parent process never leaves zombie children. SQLite backend available for local development and small deployments — same Protocol, same API.
+**Pluggable backends behind a `Protocol`.** Redis is the first and primary backend (`BLMOVE` for reliable delivery, pub/sub for result notification, sorted sets for scheduled jobs). The `Backend` interface is a `typing.Protocol`, not an ABC, which means a different store (SQLite, Postgres, in-memory for tests) can be slotted in without inheriting from anything. The in-memory backend is the one tests run against most of the time.
 
-## How TaskQueue compares
+## Comparison with existing queues
 
 | Feature                            | Celery | RQ   | Dramatiq | Arq  | TaskQueue |
 | -----------------------------------| ------ | ---- | -------- | ---- | --------- |
@@ -40,8 +40,9 @@ TaskQueue rejects both. Every job is owned by a *scope* that waits for it, propa
 | SQLite backend                     |   x    |  x   |    x     |  x   |     v     |
 | Redis backend                      |   v    |  v   |    v     |  v   |     v     |
 | `ExceptionGroup` error propagation |   x    |  x   |    x     |  x   |     v     |
+| Years of production hardening      |   v    |  v   |    v     |  x   |     x     |
 
-TaskQueue does *not* try to replace Celery for everything. It's deliberately narrower: no built-in cron, no web dashboard, no RabbitMQ. The goal is a smaller, more opinionated tool that's correct by construction.
+If you're putting something in production today, use Celery. This project's value is in the design experiment.
 
 ## Design Choices
 
@@ -53,6 +54,22 @@ TaskQueue does *not* try to replace Celery for everything. It's deliberately nar
 
 **Opinionated defaults, escape hatches everywhere.** SQLite is the default but Redis is one line of config. Pickle is the default serializer but JSON and msgpack are first-class. Strict scopes are the default but `on_error="collect"` exists when you need it.
 
+## Roadmap
+
+I'm building this in vertical slices — each phase ends with a working demo and a git tag.
+
+- [ ] **Phase 0** — Scaffolding: tooling, CI, lint, strict types, tests
+- [ ] **Phase 1** — In-memory queue, `@task` with `ParamSpec`, basic worker
+- [ ] **Phase 2** — `JobGroup` scopes, fail-fast and collect modes, nested scopes
+- [ ] **Phase 3** — Redis backend with reliable delivery, multi-process workers, CLI
+- [ ] **Phase 4** — Cross-process cancellation, heartbeat-based scope reaping
+- [ ] **Phase 5** — Retries, structured logging, metrics, middleware
+- [ ] **Phase 6** — OpenTelemetry instrumentation
+- [ ] **Phase 7** — Documentation
+- [ ] **Post-v1.0** — SQLite backend (to validate the Protocol abstraction)
+
+See the [changelog](CHANGELOG.md) for what's actually done.
+
 ## Requirements
 
 - Python 3.11+ (for `ExceptionGroup` and `TaskGroup`)
@@ -62,17 +79,17 @@ TaskQueue does *not* try to replace Celery for everything. It's deliberately nar
 
 ## Architecture
 
-A short tour of how the pieces fit together:
+A quick tour of the pieces, in roughly the order they execute:
 
-- **`Queue`** is the user-facing facade. Holds the backend, the task registry, and creates scopes.
-- **`Task`** is what `@q.task` produces — a callable that preserves its original signature via `ParamSpec`, plus a `.delay()` that enqueues.
-- **`Job`** is the serialized unit of work in transit (id, task name, args, scope id, status).
-- **`JobGroup`** is the structured-concurrency scope. Owns child jobs. Its `__aexit__` waits for them.
-- **`Backend`** is a `Protocol` for the persistence layer. The same Protocol is satisfied by the in-memory, SQLite, and Redis implementations.
-- **`Worker`** consumes jobs from a backend, executes them, and reports results. Async-native; multiprocessing for fan-out.
-- **Reaper** runs in every worker. Detects scopes whose owning processes have stopped heartbeating and cancels their children.
+- `Queue` is the user-facing facade. Holds the backend, the task registry, and creates scopes.
+- `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.delay()` for enqueueing.
+- `Job` is the serialized unit of work that crosses the wire (id, task name, args, scope id, status).
+- `JobGroup` is the structured-concurrency scope. Its `__aexit__` blocks until all children finish or are cancelled.
+- `Backend` is the `Protocol` for persistence. Implementations so far: `MemoryBackend`, `RedisBackend`.
+- `Worker` pulls jobs from a backend and runs them, async-native, with a small executor that handles cancellation injection.
+- The reaper runs inside every worker. It detects scopes whose owning processes have stopped heartbeating and cancels their children.
 
-See [`docs/architecture.md`](docs/architecture.md) for a deeper dive, including the cancellation protocol and the heartbeat-based reaping algorithm.
+I'll write a longer `docs/architecture.md` once the design has stopped moving — probably after Phase 4. The Redis-specific patterns (reliable delivery via processing lists, pub/sub-plus-polling for race-free result waits, distributed lock for the reaper) are the things I most want to document properly.
 
 ## Inspiration
 
