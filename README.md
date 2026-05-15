@@ -13,7 +13,7 @@
 
 ## Why I'm building this
 
-I spent a while reading the source of RQ and Arq for a different project, and two things kept bothering me about all of them.
+I spent a while reading the source of celery, RQ and Arq and two things kept bothering me about all of them.
 
 The first is that jobs are detached from the code that submits them. When you call `task.delay(...)` in Celery, the job becomes an orphan: if the caller dies it keeps running, if it fails the caller doesn't find out, and if you submit ten jobs and one fails the other nine keep going. The mental model is "fire and check the logs later." That works at scale but it's a strange default for a language whose normal concurrency model — async/await, exceptions, `with` blocks — is built around exactly the opposite assumption.
 
