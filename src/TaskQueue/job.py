@@ -9,5 +9,6 @@ class Job:
     email: str
     is_active: bool = True  # Default value
 
+
 class JobStatus(Enum):
     pass

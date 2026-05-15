@@ -1,6 +1,6 @@
 # TaskQueue
 
-[![CI](https://github.com/yourname/TaskQueue/actions/workflows/ci.yml/badge.svg)](https://github.com/yourname/TaskQueue/actions/workflows/ci.yml)
+[![CI](https://github.com/Amitmadh/TaskQueue/actions/workflows/ci.yaml/badge.svg)](https://github.com/Amitmadh/TaskQueue/actions/workflows/ci.yaml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Typed](https://img.shields.io/badge/typed-strict-success.svg)](https://peps.python.org/pep-0561/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
