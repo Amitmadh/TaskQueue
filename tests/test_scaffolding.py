@@ -309,9 +309,7 @@ class TestLockfile:
             pytest.skip("No uv.lock — skipping (only relevant if using uv).")
         # Confirm it's tracked by git, not just sitting locally.
         result = _run(["git", "ls-files", "--error-unmatch", "uv.lock"])
-        assert result.returncode == 0, (
-            "uv.lock exists but isn't tracked by git. Commit it for reproducible builds."
-        )
+        assert result.returncode == 0, "uv.lock exists but isn't committed to git."
 
 
 # ---------------------------------------------------------------------------
