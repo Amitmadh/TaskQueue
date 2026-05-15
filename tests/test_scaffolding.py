@@ -149,7 +149,9 @@ class TestProjectMetadata:
     def test_version_is_pep440(self, pyproject: dict) -> None:
         version = pyproject["project"]["version"]
         # Loose PEP 440 check: N.N.N with optional pre/dev/post/local suffixes.
-        assert re.match(r"^\d+\.\d+\.\d+", version), f"Version not PEP 440-ish: {version}"
+        assert re.match(r"^\d+\.\d+\.\d+", version), (
+            f"Version not PEP 440-ish: {version}"
+        )
 
     def test_python_requires_311_plus(self, pyproject: dict) -> None:
         """ExceptionGroup and TaskGroup require 3.11. Don't go lower."""
@@ -308,7 +310,8 @@ class TestLockfile:
         # Confirm it's tracked by git, not just sitting locally.
         result = _run(["git", "ls-files", "--error-unmatch", "uv.lock"])
         assert result.returncode == 0, (
-            "uv.lock exists but isn't tracked by git. Commit it for reproducible builds."
+            "uv.lock exists but isn't tracked by git."
+            "Commit it for reproducible builds."
         )
 
 
