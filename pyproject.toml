@@ -10,7 +10,7 @@ authors = [
   { name="Amit Madhala", email="amitmadhala@gmail.com" },
 ]
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
@@ -25,10 +25,12 @@ dev = [
     "pre-commit>=3.6",
     "fakeredis>=2.20",
     "redis>=5.0",
+    "pyright>=1.1.410",
 ]
 
 # ruff setup
 [tool.ruff]
+target-version = "py312"
 line-length = 88
 
 [tool.ruff.lint]
@@ -49,13 +51,14 @@ select = [
     "TC",       # Enforce importing certain types in a TYPE_CHECKING block
     "PTH",      # Use pathlib instead of os.path
     "TD",       # Be diligent with TODO comments
-    "TCH",      # type-checking imports
 ]
 
 # pyright
 [tool.pyright]
 include = ["src"]
+exclude = ["tests", "examples"]
 typeCheckingMode = "strict"
+extraPaths = ["./src/TaskQueue"]
 
 # pytest
 [tool.pytest.ini_options]
@@ -77,9 +80,3 @@ exclude_lines = [
     "raise NotImplementedError",
     "@overload",
 ]
-
-
-
-
-
-

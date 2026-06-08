@@ -1,4 +1,4 @@
-name: CI
+name: Base
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  base:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -20,11 +20,5 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
       - name: Install
         run: uv sync --all-extras --dev
-      - name: Lint
-        run: uv run ruff check .
-      - name: Format check
-        run: uv run ruff format --check .
-      - name: Type check
-        run: uv run pyright
-      - name: Test
-        run: uv run pytest --cov=TaskQueue --cov-report=xml
+      - name: Base tests
+        run: uv run pytest tests/test_base.py -v

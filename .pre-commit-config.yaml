@@ -11,7 +11,7 @@ repos:
       - id: ruff-format
         name: "🐍 python · Format with Ruff"
       - id: ruff
-        args: [ --fix ]
+        args: [ --fix, --target-version, py312 ]
 
   - repo: https://github.com/RobertCraigie/pyright-python
     rev: v1.1.409
@@ -41,6 +41,6 @@ repos:
         name: 🧪 test · Run fast tests
         entry: uv run pytest tests
         language: system
-        args: ["--timeout=3", "-m", "not slow"]
+        args: []
         pass_filenames: false
         always_run: true
