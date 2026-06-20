@@ -1,23 +1,33 @@
-"""Phase 1 test suite — a TDD spec for the *intended* API.
+"""Phase 1 test suite — the executable spec for the in-memory queue.
 
-These tests are written against the target design described in
-PHASE1_CODE_REVIEW_v2.md, not the code as it currently stands. Expect several
-to fail until the documented fixes land. In particular, the entire suite cannot
-be collected until the queue<->worker circular import (C1) is fixed.
-
-Target contract these tests encode:
+Target contract these tests encode (current API):
   exports     : Queue, Task, Job, JobStatus, JobHandle, Backend, MemoryBackend, Worker
-  JobStatus   : str-enum {QUEUED, RUNNING, COMPLETED, FAILED}
-  Job         : keyword-constructable; to_dict()/from_dict() round-trip; equality
-  Backend     : {enqueue, claim, get_job, store_result, store_error, wait_for}
+  JobStatus   : str-enum {CREATED, QUEUED, RUNNING, COMPLETED, FAILED}
+  Job         : keyword-constructable; to_record/from_record(serializer) round-trip;
+                identity equality (by id)
+  Serializer  : dumps/loads protocol; JSONSerializer default (Pickle too)
+  Backend     : {enqueue(job_id, record), claim() -> record, get_job(job_id) -> record,
+                save(job_id, record, *, done), wait_for(job_id)}
   @q.task     : bare AND @q.task(name=..., max_retries=...); bare max_retries == 0
-  JobHandle   : .job_id, await .result() (raises on failure), await .status()
+  JobHandle   : (job_id, backend, serializer); .job_id, await .result() (raises on
+                failure), await .status()
   Worker      : async context manager; survives unknown task names and task errors
+
+Records are opaque dicts: control fields (id/task_name/status/error/attempts/created_at)
+are plain, while args/kwargs (under "payload") and "result" are serializer blobs. Tests
+that drive a backend directly build records via Job.to_record(serializer) and read them
+back via Job.from_record(record, serializer).
 """
 
 import pytest
 
 from TaskQueue import MemoryBackend, Queue
+from TaskQueue.backends.serializer import JSONSerializer, Serializer
+
+
+@pytest.fixture
+def serializer() -> Serializer:
+    return JSONSerializer()
 
 
 @pytest.fixture

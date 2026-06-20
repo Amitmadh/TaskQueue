@@ -1,4 +1,4 @@
-"""C1 guard: the package must import, and expose its public surface."""
+"""The package must import without a cycle, and expose its public surface."""
 
 import importlib
 
@@ -11,6 +11,9 @@ PUBLIC = [
     "Backend",
     "MemoryBackend",
     "Worker",
+    "Serializer",
+    "JSONSerializer",
+    "PickleSerializer",
 ]
 
 
@@ -43,5 +46,6 @@ def test_submodules_import_without_cycle() -> None:
         "TaskQueue.job",
         "TaskQueue.backends.interface",
         "TaskQueue.backends.memory",
+        "TaskQueue.backends.serializer",
     ):
         assert importlib.import_module(mod) is not None

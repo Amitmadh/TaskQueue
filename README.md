@@ -5,7 +5,7 @@
 [![Typed](https://img.shields.io/badge/typed-strict-success.svg)](https://peps.python.org/pep-0561/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**A Python task queue built around structured concurrency and end-to-end type safety.** Jobs have parent-child relationships, failures cancel siblings instead of orphaning them, and type checker catches signature mismatches at `.delay()` call sites. SQLite for local development, Redis for production — same API.
+**A Python task queue built around structured concurrency and end-to-end type safety.** Jobs have parent-child relationships, failures cancel siblings instead of orphaning them, and type checker catches signature mismatches at `.submit()` call sites. SQLite for local development, Redis for production — same API.
 
 > **Status:** pre-alpha, in active development. The API is still moving — see the roadmap below.
 
@@ -25,7 +25,7 @@ This project is my attempt to do both differently. It's also the thing I'm using
 
 **Structured concurrency, distributed.** Built on the same idea as `asyncio.TaskGroup` and Trio's nurseries, extended across processes. Jobs are spawned into a *scope* (`JobGroup`). The scope's `async with` block doesn't exit until every child reaches a terminal state. If one child fails, its siblings are cancelled and the exception propagates up the scope tree. If the process holding the scope dies, a heartbeat-based reaper cancels its children so nothing is orphaned.
 
-**End-to-end type safety.** `@q.task` preserves the wrapped function's signature via `ParamSpec`, so `add.delay(2, 3)` is type-checked against `add`'s signature and `await handle.result()` is correctly typed as `int`. The whole codebase runs under Pyright in strict mode.
+**End-to-end type safety.** `@q.task` preserves the wrapped function's signature via `ParamSpec`, so `add.submit(2, 3)` is type-checked against `add`'s signature and `await handle.result()` is correctly typed as `int`. The whole codebase runs under Pyright in strict mode.
 
 **Pluggable backends behind a `Protocol`.** Redis is the first and primary backend (`BLMOVE` for reliable delivery, pub/sub for result notification, sorted sets for scheduled jobs). The `Backend` interface is a `typing.Protocol`, not an ABC, which means a different store (SQLite, Postgres, in-memory for tests) can be slotted in without inheriting from anything. The in-memory backend is the one tests run against most of the time.
 
@@ -34,7 +34,7 @@ This project is my attempt to do both differently. It's also the thing I'm using
 | Feature                            | Celery | RQ   | Dramatiq | Arq  | TaskQueue |
 | -----------------------------------| ------ | ---- | -------- | ---- | --------- |
 | Async-native worker                |   v    |  x   |    x     |  v   |     v     |
-| Type-safe `.delay()` (ParamSpec)   |   x    |  x   |    x     |  x   |     v     |
+| Type-safe `.submit()` (ParamSpec)  |   x    |  x   |    x     |  x   |     v     |
 | Structured concurrency / scopes    |   x    |  x   |    x     |  x   |     v     |
 | Reliable cross-process cancel      |   x    |  x   |    x     |  v   |     v     |
 | SQLite backend                     |   x    |  x   |    x     |  x   |     v     |
@@ -52,7 +52,7 @@ If you're putting something in production today, use Celery. This project's valu
 
 **The Protocol is the contract.** Backends, serializers, and middleware are `typing.Protocol`s, not abstract base classes. Bring your own implementation without inheriting from anything.
 
-**Opinionated defaults, escape hatches everywhere.** SQLite is the default but Redis is one line of config. Pickle is the default serializer but JSON and msgpack are first-class. Strict scopes are the default but `on_error="collect"` exists when you need it.
+**Opinionated defaults, escape hatches everywhere.** SQLite is the default but Redis is one line of config. JSON is the default serializer — dependency-free and portable — with Pickle available when you need Python-native objects. Strict scopes are the default but `on_error="collect"` exists when you need it.
 
 ## Roadmap
 
@@ -82,7 +82,7 @@ See the [changelog](CHANGELOG.md) for what's actually done.
 A quick tour of the pieces, in roughly the order they execute:
 
 - `Queue` is the user-facing facade. Holds the backend, the task registry, and creates scopes.
-- `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.delay()` for enqueueing.
+- `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.submit()` for enqueueing.
 - `Job` is the serialized unit of work that crosses the wire (id, task name, args, scope id, status).
 - `JobGroup` is the structured-concurrency scope. Its `__aexit__` blocks until all children finish or are cancelled.
 - `Backend` is the `Protocol` for persistence. Implementations so far: `MemoryBackend`, `RedisBackend`.

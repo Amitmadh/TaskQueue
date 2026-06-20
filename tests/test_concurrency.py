@@ -6,9 +6,6 @@ available, every job runs exactly once (no drops or duplicates), and the
 event-driven result delivery wakes every waiter. Synchronization uses
 counters/events rather than wall-clock timing, so the assertions are exact
 rather than flaky.
-
-Target Phase 1 API (see PHASE1_CODE_REVIEW_v2.md): the suite cannot be
-collected until the queue<->worker import cycle (C1) is fixed.
 """
 
 import asyncio

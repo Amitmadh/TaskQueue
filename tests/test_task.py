@@ -1,9 +1,14 @@
-"""Task: __call__ delegation and submit() job construction."""
+"""Task: __call__ delegation and submit() job construction.
+
+submit() builds a Job, enqueues its record on the backend, and returns a typed
+JobHandle. The enqueued record is inspected by reconstructing the Job via
+Job.from_record(record, queue.serializer).
+"""
 
 import pytest
 
 from TaskQueue.handle import JobHandle
-from TaskQueue.job import JobStatus
+from TaskQueue.job import Job, JobStatus
 from TaskQueue.queue import Queue
 from TaskQueue.task import Task
 
@@ -43,7 +48,7 @@ async def test_submit_builds_job_from_call(queue: Queue) -> None:
         return x + y
 
     handle = await add.submit(2, 3)
-    job = await queue.backend.get_job(handle.job_id)
+    job = Job.from_record(await queue.backend.get_job(handle.job_id), queue.serializer)
     assert job.task_name == add.name
     assert job.args == (2, 3)
     assert job.kwargs == {}
@@ -56,7 +61,7 @@ async def test_submit_captures_kwargs(queue: Queue) -> None:
         return name
 
     handle = await greet.submit("amit", loud=True)
-    job = await queue.backend.get_job(handle.job_id)
+    job = Job.from_record(await queue.backend.get_job(handle.job_id), queue.serializer)
     assert job.args == ("amit",)
     assert job.kwargs == {"loud": True}
 

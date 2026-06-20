@@ -73,14 +73,17 @@ async def test_unknown_task_name_does_not_kill_worker(queue: Queue) -> None:
     backend = queue.backend
     ghost = Job(task_name="does.not.exist")
     async with queue.worker():
-        await backend.enqueue(ghost)
+        await backend.enqueue(ghost.id, ghost.to_record(queue.serializer))
 
         async def until_failed() -> None:
-            while (await backend.get_job(ghost.id)).status is not JobStatus.FAILED:
+            while (
+                JobStatus((await backend.get_job(ghost.id))["status"])
+                is not JobStatus.FAILED
+            ):
                 await asyncio.sleep(0.01)
 
         await asyncio.wait_for(until_failed(), 3)
-        assert (await backend.get_job(ghost.id)).error
+        assert (await backend.get_job(ghost.id))["error"]
         h_ok = await ok.submit()
         assert await asyncio.wait_for(h_ok.result(), 3) == 1
 
@@ -107,3 +110,45 @@ async def test_root_group_spawn_round_trip(queue: Queue) -> None:
     async with queue.worker():
         handle = await queue.root_group().spawn(add, 2, 3)
         assert await asyncio.wait_for(handle.result(), 3) == 5
+
+
+async def test_worker_is_single_use(queue: Queue) -> None:
+    # A worker cannot be reused after it has exited — get a fresh one instead.
+    worker = queue.worker()
+    async with worker:
+        pass
+    assert worker.running is False
+    with pytest.raises(RuntimeError):
+        async with worker:
+            pass
+
+
+async def test_worker_rejects_reentry_while_running(queue: Queue) -> None:
+    worker = queue.worker()
+    async with worker:
+        with pytest.raises(RuntimeError):
+            async with worker:
+                pass
+
+
+async def test_inflight_job_is_redelivered_on_shutdown(queue: Queue) -> None:
+    started = asyncio.Event()
+    unblock = asyncio.Event()
+
+    @queue.task
+    async def slow() -> int:
+        started.set()
+        await unblock.wait()  # stay mid-flight until released
+        return 42
+
+    async with queue.worker() as w:
+        handle = await slow.submit()
+        await asyncio.wait_for(started.wait(), 2)  # ensure it is RUNNING
+        assert w.running is True
+    # pool exited mid-flight: the job must be redelivered (QUEUED), not stranded
+    assert await handle.status() == JobStatus.QUEUED
+
+    # a fresh worker completes it — at-least-once delivery
+    unblock.set()
+    async with queue.worker():
+        assert await asyncio.wait_for(handle.result(), 3) == 42
