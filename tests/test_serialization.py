@@ -57,3 +57,31 @@ def test_unserializable_args_raise() -> None:
     j = Job(task_name="a", args=(lambda: 1,))
     with pytest.raises(TypeError):
         j.to_record(ser)
+
+
+@pytest.mark.parametrize("ser", ALL_SERIALIZERS, ids=_ids)
+def test_round_trip_preserves_every_field(ser: Serializer) -> None:
+    # Drift guard: every public attribute must survive to_record -> from_record.
+    # The Job is fully populated with distinct, non-default values (an
+    # intentionally odd combination) so that adding a field to Job but wiring it
+    # into only some of __init__/to_record/from_record fails here instead of
+    # silently dropping data in production.
+    j = Job(
+        task_name="pkg.mod.task",
+        id="fixed-id-123",
+        args=(1, "two", 3.0),
+        kwargs={"a": 1, "b": [2, 3]},
+        status=JobStatus.COMPLETED,  # COMPLETED so `result` is serialized
+        result={"x": [1, 2]},
+        error="recorded error",
+        attempts=4,
+    )
+    j.request_cancel = True
+
+    back = Job.from_record(j.to_record(ser), ser)
+
+    for name, expected in vars(j).items():
+        assert hasattr(back, name), f"field {name!r} missing after round-trip"
+        assert getattr(back, name) == expected, (
+            f"field {name!r} changed: {getattr(back, name)!r} != {expected!r}"
+        )

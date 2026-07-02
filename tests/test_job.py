@@ -17,7 +17,14 @@ SER = PickleSerializer()
 class TestJobStatus:
     def test_members(self) -> None:
         names = {s.name for s in JobStatus}
-        assert names == {"CREATED", "QUEUED", "RUNNING", "COMPLETED", "FAILED"}
+        assert names == {
+            "CREATED",
+            "QUEUED",
+            "RUNNING",
+            "COMPLETED",
+            "FAILED",
+            "CANCELLED",
+        }
 
     def test_is_str_enum(self) -> None:
         # str mixin -> packs transparently as its value (json, msgpack, etc.)
@@ -95,6 +102,7 @@ class TestJobToRecord:
             "attempts",
             "payload",
             "result",
+            "request_cancel",
         }
 
     def test_envelope_fields_stay_plain(self) -> None:

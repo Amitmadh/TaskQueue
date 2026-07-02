@@ -34,7 +34,8 @@ class Worker:
     async def __aenter__(self) -> Worker:
         if self._entered:
             raise RuntimeError(
-                "Worker is single-use; call queue.worker() for a fresh one"
+                "this worker pool has already been used; "
+                "call queue.worker() to create a fresh one"
             )
         self._entered = True
         self._running = True
@@ -64,7 +65,7 @@ class Worker:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("claim failed; continuing")
+                logger.exception("failed to claim a job from the backend; continuing")
                 continue
 
             try:
@@ -81,28 +82,57 @@ class Worker:
             except Exception:
                 # A poison record (failed deserialize/save) must not kill the
                 # worker and silently shrink the pool. Log and keep serving.
-                logger.exception("worker loop iteration failed; continuing")
+                logger.exception("unexpected error while processing job; continuing")
+                continue
 
     async def _process(self, record: dict[str, Any]) -> None:
         job = Job.from_record(record, self._serializer)
         logger.debug("claimed job %s (task=%s)", job.id, job.task_name)
+        if job.request_cancel:
+            job.status = JobStatus.CANCELLED
+            logger.debug("job %s cancelled", job.id)
+            await self._save(job)
+            return
 
         task = self._task_registry.get(job.task_name)
         if task is None:
-            job.error = f"no task named {job.task_name}"
+            job.error = f"no task is registered under the name {job.task_name!r}"
             job.status = JobStatus.FAILED
-            logger.warning("job %s failed: unknown task %r", job.id, job.task_name)
-        else:
-            try:
-                job.result = await task(*job.args, **job.kwargs)
+            logger.warning(
+                "job %s failed: no task registered under name %r",
+                job.id,
+                job.task_name,
+            )
+            await self._save(job)
+            return
+
+        cancel_task = asyncio.create_task(self._backend.wait_cancel(job.id))
+        job_task = asyncio.create_task(task(*job.args, **job.kwargs))
+        pending: set[asyncio.Task[None] | asyncio.Task[Any]] = {job_task, cancel_task}
+        try:
+            done, pending = await asyncio.wait(
+                [cancel_task, job_task], return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if job_task in done:
+                job.result = job_task.result()
                 job.status = JobStatus.COMPLETED
                 logger.debug("job %s completed", job.id)
-            except Exception as e:
-                job.error = str(e)
-                job.status = JobStatus.FAILED
-                logger.warning("job %s failed: %s", job.id, e)
-
-        await self._save(job)
+            else:
+                job.status = JobStatus.CANCELLED
+                logger.debug("job %s cancelled", job.id)
+            await self._save(job)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            job.error = str(e)
+            job.status = JobStatus.FAILED
+            logger.debug("job %s failed: %s", job.id, e)
+            await self._save(job)
+        finally:
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _save(self, job: Job) -> None:
         # Terminal write: persist outcome and wake result() waiters.

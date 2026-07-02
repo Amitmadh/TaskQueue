@@ -1,5 +1,5 @@
 """MemoryBackend operations: async-blocking claim(), FIFO order, and the
-terminal save(done=True) that wakes wait_for() waiters.
+terminal save(done=True) that wakes take_result() waiters.
 
 A record is built with Job.to_record(serializer) and read back with
 Job.from_record(record, serializer); the backend never deserializes payloads.
@@ -77,8 +77,8 @@ async def test_save_done_completes_and_wakes_waiter(serializer: Serializer) -> N
     be = MemoryBackend()
     job = await _enqueue(be, serializer)
     await _finish(be, serializer, job, status=JobStatus.COMPLETED, result=99)
-    await asyncio.wait_for(be.wait_for(job.id), timeout=1)
-    got = Job.from_record(await be.get_job(job.id), serializer)
+    rec = await asyncio.wait_for(be.take_result(job.id), timeout=1)
+    got = Job.from_record(rec, serializer)
     assert got.status is JobStatus.COMPLETED
     assert got.result == 99
 
@@ -87,8 +87,8 @@ async def test_save_error_fails_and_wakes_waiter(serializer: Serializer) -> None
     be = MemoryBackend()
     job = await _enqueue(be, serializer)
     await _finish(be, serializer, job, status=JobStatus.FAILED, error="boom")
-    await asyncio.wait_for(be.wait_for(job.id), timeout=1)
-    got = Job.from_record(await be.get_job(job.id), serializer)
+    rec = await asyncio.wait_for(be.take_result(job.id), timeout=1)
+    got = Job.from_record(rec, serializer)
     assert got.status is JobStatus.FAILED
     assert got.error == "boom"
 
@@ -100,29 +100,29 @@ async def test_save_without_done_does_not_wake(serializer: Serializer) -> None:
     await be.save(job.id, job.to_record(serializer))  # done defaults to False
     assert JobStatus((await be.get_job(job.id))["status"]) is JobStatus.RUNNING
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(be.wait_for(job.id), timeout=0.1)
+        await asyncio.wait_for(be.take_result(job.id), timeout=0.1)
 
 
-async def test_wait_for_returns_immediately_if_already_done(
+async def test_take_result_returns_immediately_if_already_done(
     serializer: Serializer,
 ) -> None:
     be = MemoryBackend()
     job = await _enqueue(be, serializer)
     await _finish(be, serializer, job, status=JobStatus.COMPLETED, result=1)
-    await asyncio.wait_for(be.wait_for(job.id), timeout=0.5)
+    await asyncio.wait_for(be.take_result(job.id), timeout=0.5)
 
 
-async def test_wait_for_blocks_until_done(serializer: Serializer) -> None:
+async def test_take_result_blocks_until_done(serializer: Serializer) -> None:
     be = MemoryBackend()
     job = await _enqueue(be, serializer)
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(be.wait_for(job.id), timeout=0.1)
+        await asyncio.wait_for(be.take_result(job.id), timeout=0.1)
 
 
-async def test_wait_for_unknown_job_raises() -> None:
+async def test_take_result_unknown_job_raises() -> None:
     be = MemoryBackend()
     with pytest.raises(RuntimeError):
-        await be.wait_for("nope")
+        await be.take_result("nope")
 
 
 async def test_concurrent_claims_split_the_jobs(serializer: Serializer) -> None:

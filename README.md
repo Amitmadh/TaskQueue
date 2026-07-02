@@ -27,7 +27,55 @@ This project is my attempt to do both differently. It's also the thing I'm using
 
 **End-to-end type safety.** `@q.task` preserves the wrapped function's signature via `ParamSpec`, so `add.submit(2, 3)` is type-checked against `add`'s signature and `await handle.result()` is correctly typed as `int`. The whole codebase runs under Pyright in strict mode.
 
-**Pluggable backends behind a `Protocol`.** Redis is the first and primary backend (`BLMOVE` for reliable delivery, pub/sub for result notification, sorted sets for scheduled jobs). The `Backend` interface is a `typing.Protocol`, not an ABC, which means a different store (SQLite, Postgres, in-memory for tests) can be slotted in without inheriting from anything. The in-memory backend is the one tests run against most of the time.
+**Pluggable backends behind a `Protocol`.** The `Backend` interface is a `typing.Protocol`, not an ABC, so a different store (Redis, SQLite, Postgres) can be slotted in without inheriting from anything. What's built today is the in-memory backend — the one the tests run against. Redis is the intended production backend (`BLMOVE` for reliable delivery, pub/sub for result notification, sorted sets for scheduled jobs), planned for Phase 3, with SQLite after v1.0.
+
+## Example
+
+Ten jobs run in parallel inside a scope. One fails — and instead of the other nine running to completion while you learn about it from the logs, the scope cancels them and raises the failure where you can catch it.
+
+```python
+import asyncio
+
+from TaskQueue import MemoryBackend, Queue
+
+q = Queue(MemoryBackend())
+
+
+@q.task
+async def work(n: int) -> int:
+    await asyncio.sleep(1)        # still running when its sibling fails
+    return n * n
+
+
+@q.task
+async def boom() -> int:
+    raise RuntimeError("job hit a wall")
+
+
+async def main() -> None:
+    async with q.worker(concurrency=10):
+        try:
+            async with q.group() as group:  # on_error="cancel_siblings" by default
+                for i in range(9):
+                    await group.spawn(work, i)      # nine slow jobs...
+                await group.spawn(boom)             # ...and one that fails fast
+        except* RuntimeError as eg:
+            print(f"scope failed, siblings cancelled: {eg.exceptions}")
+
+
+asyncio.run(main())
+```
+
+The queue boundary keeps your types intact, too — `@q.task` preserves the signature via `ParamSpec`:
+
+```python
+handle = await work.submit(3)       # JobHandle[int]
+total: int = await handle.result()  # typed as int
+
+await work.submit("three")          # Pyright: Argument of type "str" cannot be assigned to "int"
+```
+
+When fail-fast isn't what you want: `group(on_error="collect")` runs every job and raises a `BaseExceptionGroup` of all failures, and `group(deadline=5.0)` cancels the whole scope if it outruns its deadline.
 
 ## Comparison with existing queues
 
@@ -58,9 +106,9 @@ If you're putting something in production today, use Celery. This project's valu
 
 I'm building this in vertical slices — each phase ends with a working demo and a git tag.
 
-- [ ] **Phase 0** — Scaffolding: tooling, CI, lint, strict types, tests
-- [ ] **Phase 1** — In-memory queue, `@task` with `ParamSpec`, basic worker
-- [ ] **Phase 2** — `JobGroup` scopes, fail-fast and collect modes, nested scopes
+- [x] **Phase 0** — Scaffolding: tooling, CI, lint, strict types, tests
+- [x] **Phase 1** — In-memory queue, `@task` with `ParamSpec`, basic worker
+- [x] **Phase 2** — `JobGroup` scopes, fail-fast/collect/ignore modes, deadlines, cooperative cancellation, nested scopes
 - [ ] **Phase 3** — Redis backend with reliable delivery, multi-process workers, CLI
 - [ ] **Phase 4** — Cross-process cancellation, heartbeat-based scope reaping
 - [ ] **Phase 5** — Retries, structured logging, metrics, middleware
@@ -85,7 +133,7 @@ A quick tour of the pieces, in roughly the order they execute:
 - `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.submit()` for enqueueing.
 - `Job` is the serialized unit of work that crosses the wire (id, task name, args, scope id, status).
 - `JobGroup` is the structured-concurrency scope. Its `__aexit__` blocks until all children finish or are cancelled.
-- `Backend` is the `Protocol` for persistence. Implementations so far: `MemoryBackend`, `RedisBackend`.
+- `Backend` is the `Protocol` for persistence. Built today: `MemoryBackend`; a `RedisBackend` is the next one planned (Phase 3).
 - `Worker` pulls jobs from a backend and runs them, async-native, with a small executor that handles cancellation injection.
 - The reaper runs inside every worker. It detects scopes whose owning processes have stopped heartbeating and cancels their children.
 

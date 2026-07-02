@@ -1,31 +1,14 @@
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, overload
+from typing import Any, overload
 
 from TaskQueue.backends.interface import Backend
 from TaskQueue.backends.serializer import JSONSerializer, Serializer
+from TaskQueue.jobGroup import JobGroup, OnError
 from TaskQueue.task import Task
 from TaskQueue.worker import Worker
 
-if TYPE_CHECKING:
-    from TaskQueue.handle import JobHandle
-
 logger = logging.getLogger(__name__)
-
-
-class _NoOpScope:
-    """Phase 1 placeholder. Phase 2 replaces this with JobGroup."""
-
-    async def __aenter__(self) -> "_NoOpScope":
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        return None  # owns nothing, cancels nothing, waits for nothing
-
-    async def spawn[**P, R](
-        self, task: Task[P, R], *args: P.args, **kwargs: P.kwargs
-    ) -> "JobHandle[R]":
-        return await task.submit(*args, **kwargs)
 
 
 class Queue:
@@ -75,7 +58,9 @@ class Queue:
             task_name = name or f"{f.__module__}.{f.__name__}"
             if task_name in self._task_registry:
                 logger.warning(
-                    "task name %r already registered; overwriting", task_name
+                    "task %r is already registered; "
+                    "overwriting the previous registration",
+                    task_name,
                 )
             instance = Task(
                 func=f,
@@ -95,5 +80,34 @@ class Queue:
     def worker(self, concurrency: int = 1) -> Worker:
         return Worker(self, concurrency=concurrency)
 
-    def root_group(self) -> _NoOpScope:
-        return _NoOpScope()
+    def group(
+        self,
+        *,
+        on_error: OnError | str = OnError.CANCEL_SIBLINGS,
+        deadline: float | None = None,
+    ) -> JobGroup:
+        """Open a structured-concurrency scope, entered with ``async with``.
+
+        The block does not exit until every job spawned into the scope reaches a
+        terminal state, applying the ``on_error`` policy (and ``deadline`` if
+        set). This is the everyday scope: a group opened inside another is
+        effectively its child, since the outer ``async with`` cannot exit until
+        the inner one has.
+        """
+        return JobGroup(self._backend, on_error=on_error, deadline=deadline)
+
+    def root_group(
+        self,
+        *,
+        on_error: OnError | str = OnError.CANCEL_SIBLINGS,
+        deadline: float | None = None,
+    ) -> JobGroup:
+        """Open a detached, top-level scope — the explicit fire-and-forget entry.
+
+        Behaves like ``group()`` but documents intent: a root group stands on its
+        own instead of nesting. Spawning into it without ``async with``
+        (``await q.root_group().spawn(...)``) is the one sanctioned way to detach
+        work from any enclosing scope, and it is the unit a heartbeat reaper will
+        watch in a later phase.
+        """
+        return JobGroup(self._backend, on_error=on_error, deadline=deadline)

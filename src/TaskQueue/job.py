@@ -12,6 +12,7 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class Job:
@@ -35,6 +36,7 @@ class Job:
         self.result: Any = result
         self.error: str | None = error
         self.attempts = attempts
+        self.request_cancel = False
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Job):
@@ -58,6 +60,7 @@ class Job:
             "status": self.status.value,
             "error": self.error,
             "attempts": self.attempts,
+            "request_cancel": self.request_cancel,
             "payload": serializer.dumps(
                 {"args": list(self.args), "kwargs": self.kwargs}
             ),
@@ -70,17 +73,22 @@ class Job:
 
     @classmethod
     def from_record(cls, record: dict[str, Any], serializer: Serializer) -> Self:
-        payload = serializer.loads(record["payload"])
         job = object.__new__(cls)
-        job.id = record["id"]
-        job.task_name = record["task_name"]
-        job.created_at = datetime.fromisoformat(record["created_at"])
-        job.args = tuple(payload["args"])
-        job.kwargs = payload["kwargs"]
-        job.status = JobStatus(record["status"])
+        payload = (
+            serializer.loads(record["payload"])
+            if record["payload"] is not None
+            else None
+        )
         job.result = (
             serializer.loads(record["result"]) if record["result"] is not None else None
         )
+        job.id = record["id"]
+        job.task_name = record["task_name"]
+        job.created_at = datetime.fromisoformat(record["created_at"])
+        job.status = JobStatus(record["status"])
         job.error = record["error"]
-        job.attempts = record["attempts"]
+        job.args = tuple(payload["args"]) if payload is not None else ()
+        job.kwargs = dict(payload["kwargs"]) if payload is not None else {}
+        job.request_cancel = record.get("request_cancel", False)
+        job.attempts = record.get("attempts", 0)
         return job

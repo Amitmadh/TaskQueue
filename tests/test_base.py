@@ -114,7 +114,7 @@ async def test_streaming_producer_consumer() -> None:
     assert sorted(collected) == list(range(15))
 
 
-async def test_root_group_spawn_many() -> None:
+async def test_root_group_spawn_loop() -> None:
     q = Queue(backend=MemoryBackend())
 
     @q.task

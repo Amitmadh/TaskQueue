@@ -2,9 +2,17 @@
 # The API end to end #
 ######################
 import asyncio
+import logging
 
 from TaskQueue import Queue
 from TaskQueue.backends.memory import MemoryBackend
+
+logging.basicConfig(level=logging.WARNING)
+tq_logger = logging.getLogger("TaskQueue")
+tq_logger.setLevel(logging.DEBUG)
+tq_logger.addHandler(logging.StreamHandler())
+tq_logger.propagate = False  # stop bubbling up to root
+
 
 q = Queue(backend=MemoryBackend())
 

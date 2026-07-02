@@ -13,12 +13,6 @@ repos:
       - id: ruff
         args: [ --fix, --target-version, py312 ]
 
-  - repo: https://github.com/RobertCraigie/pyright-python
-    rev: v1.1.409
-    hooks:
-      - id: pyright
-        name: "🐍 python · Check types"
-
   - repo: https://github.com/abravalheri/validate-pyproject
     rev: v0.23
     hooks:
@@ -40,6 +34,13 @@ repos:
       - id: pytest-fast
         name: 🧪 test · Run fast tests
         entry: uv run pytest tests
+        language: system
+        args: []
+        pass_filenames: false
+        always_run: true
+      - id: pyright
+        name: "🐍 python · Check types"
+        entry: uv run pyright
         language: system
         args: []
         pass_filenames: false

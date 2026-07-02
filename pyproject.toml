@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "TaskQueue"
-version = "0.0.0"
+version = "0.0.2"
 description = "A distributed async task queue with structured concurrency and end-to-end type safety."
 authors = [
   { name="Amit Madhala", email="amitmadhala@gmail.com" },
@@ -55,9 +55,10 @@ select = [
 
 # pyright
 [tool.pyright]
-include = ["src"]
-exclude = ["tests", "examples"]
+include = ["src", "tests/test_typing.py"]
+exclude = ["examples", "**/node_modules", "**/__pycache__", "**/.*", ".venv", ".venv-linux"]
 typeCheckingMode = "strict"
+reportUnnecessaryTypeIgnoreComment = "error"
 extraPaths = ["./src/TaskQueue"]
 
 # pytest

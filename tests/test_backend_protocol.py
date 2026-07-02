@@ -5,7 +5,17 @@ import inspect
 from TaskQueue.backends.interface import Backend
 from TaskQueue.backends.memory import MemoryBackend
 
-REQUIRED = {"enqueue", "claim", "get_job", "save", "release", "wait_for"}
+REQUIRED = {
+    "enqueue",
+    "claim",
+    "get_job",
+    "save",
+    "release",
+    "take_result",
+    "request_cancel",
+    "request_cancel_many",
+    "wait_cancel",
+}
 
 
 def test_memory_backend_is_structural_instance() -> None:

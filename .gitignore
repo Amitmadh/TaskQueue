@@ -1,5 +1,6 @@
 for_me.md
 .venv/
+./venv-linux
 .ruff_cache/
 .pytest_cache/
 __pycache__/

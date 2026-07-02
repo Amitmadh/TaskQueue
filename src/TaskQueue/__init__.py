@@ -8,6 +8,7 @@ from TaskQueue.backends.serializer import (
     PickleSerializer,
     Serializer,
 )
+from TaskQueue.exceptions import JobCancelled
 from TaskQueue.handle import JobHandle
 from TaskQueue.job import Job, JobStatus
 from TaskQueue.queue import Queue
@@ -23,6 +24,7 @@ __all__ = [
     "Queue",
     "Task",
     "Job",
+    "JobCancelled",
     "JobHandle",
     "JobStatus",
     "Backend",
