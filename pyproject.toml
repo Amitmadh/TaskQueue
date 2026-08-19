@@ -17,8 +17,6 @@ dependencies = []
 taskqueue = "TaskQueue.cli:main"
 
 [project.optional-dependencies]
-# The RedisBackend driver. Kept out of `dependencies` so the core installs
-# without it; `TaskQueue.backends.get("redis")` names this extra when absent.
 redis = [
     "redis>=5.0",
 ]
@@ -88,11 +86,4 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
     "@overload",
-]
-
-[dependency-groups]
-dev = [
-    "fakeredis>=2.36.1",
-    "pytest>=9.0.3",
-    "ruff>=0.15.16",
 ]
