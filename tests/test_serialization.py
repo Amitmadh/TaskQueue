@@ -14,8 +14,8 @@ from TaskQueue import (
     MemoryBackend,
     PickleSerializer,
     Queue,
+    Serializer,
 )
-from TaskQueue.backends.serializer import Serializer
 from TaskQueue.job import Job, JobStatus
 
 ALL_SERIALIZERS = [JSONSerializer(), PickleSerializer()]

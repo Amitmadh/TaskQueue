@@ -2,6 +2,73 @@
 
 All notable changes documented here.
 
+## [0.3.0] - 2026-08-19
+
+### Added
+
+- **A CLI.** `taskqueue` installs as a console script (`[project.scripts]`), with
+  `taskqueue worker <module>:<queue> [-c N] [-l LEVEL]` to run a worker pool, plus
+  `taskqueue backends` / `taskqueue serializers` to list what the package ships and
+  `--version`. The target is an **import string, not `--backend`/`--serializer` flags**:
+  a worker has to import the task module anyway (importing it is what runs the `@q.task`
+  decorators that populate the registry), so letting that module construct the Queue,
+  backend and serializer together makes a producer/worker serializer mismatch
+  unspeakable. Only knobs that cannot desync — concurrency, log level — stay as flags.
+  Exit codes are distinct: `1` for an unresolvable target, `2` for an argparse usage
+  error, so a supervisor can tell "typed it wrong" from "your app failed to import".
+- **Task namespaces.** `Queue(backend, namespace="myapp")` fixes task names to
+  `"<namespace>.<function>"` and stops consulting `__module__` entirely, so a name is
+  stable across launch modes, working directories, and file moves. Without it names
+  still default to the import path, which is right for a module that is only imported.
+- **`TaskNameError`** (exported from `TaskQueue`), raised at decoration time when a name
+  could not be agreed on by two processes — see Changed.
+- **A `serializers` package.** `Serializer` moved out of `backends/serializer.py` into
+  `TaskQueue.serializers`, one module per implementation (`json_serializer`,
+  `pickle_serializer`). The filename *is* the registration: `taskqueue serializers`
+  reads the directory with `pkgutil.iter_modules` and never imports anything, so listing
+  implementations cannot fail because an optional driver is missing.
+- **`TaskQueue.logger.setup_logging(level)`** — opt-in console logging for applications,
+  colourised when stderr is a TTY. The library itself stays silent by default.
+- **The worker announces what it serves.** `taskqueue worker` logs
+  `serving N task(s): myapp.add, myapp.fetch` before accepting work — the exact strings
+  that process can resolve a job back to, so a producer/worker name mismatch is one
+  glance away instead of a job that quietly never runs.
+- **`examples/demo.py`** — the six scenarios (round-trip, fan-out, fail-fast, explicit
+  cancellation, scope deadline, `on_error="collect"`) end to end in one process.
+- **`RedisBackend` — skeleton only, not usable.** `enqueue`, `claim` and `get_job` are
+  implemented against a Redis hash per job plus `BLMOVE` from `queue` to `processing`;
+  `save`, `release`, `take_result`, `request_cancel`, `request_cancel_many` and
+  `wait_cancel` still raise `NotImplementedError`. A worker cannot complete a single job
+  against it yet. Phase 3 stays open.
+- **`.gitattributes`** (`* text=auto eol=lf`). The repository had drifted into mixed line
+  endings, so an editor rewriting a file end to end was showing up as a whole-file diff.
+
+### Changed
+
+- **A task name is now treated as a wire identifier, not a Python detail.** It is
+  serialized into the job record and resolved by a worker in another process, so both
+  sides must compute the same string — and `f"{func.__module__}.{func.__name__}"` does
+  not, because `__module__` depends on how the program was *launched*. Deriving a name
+  for a task defined in a module being run as a script now raises `TaskNameError` at
+  decoration (it would register as `__main__.x` here and `<import.path>.x` in a worker,
+  which would silently never match) instead of guessing. Registering two tasks under one
+  name also raises, where it previously logged a warning and silently overwrote the
+  first — rebinding a name points jobs already queued under it at different code.
+- **`Job.to_record` now produces a Redis-shaped record.** Control fields are plain
+  strings (`attempts` stringified, `request_cancel` as `"0"`/`"1"`) and only the payload
+  and result are `bytes` blobs, because a Redis hash stores strings and bytes — not
+  ints, bools or `None`. `error` and `result` are written only once populated, so an
+  absent key means `None`; `from_record` reads them with `.get`.
+- **Modules renamed to snake_case**, and submodule imports change with them:
+  `jobGroup.py` → `job_group.py`, `backends/memory.py` → `backends/memory_backend.py`,
+  `backends/serializer.py` → `serializers/`. Imports from the top-level `TaskQueue`
+  package are unaffected.
+- **`JobGroup` has an `id`**, stamped on its log lines and into the `BaseExceptionGroup`
+  message so concurrent scopes can be told apart. Phase 4 will persist it.
+- Package version `0.0.2` → `0.3.0`. It had never been bumped past the initial
+  scaffolding, so `taskqueue --version` and the `0.1.0` / `0.2.0` entries below
+  disagreed; this realigns them.
+
 ## [0.2.0] - 2026-07-02
 
 ### Added

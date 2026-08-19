@@ -8,8 +8,8 @@ test_serialization.py.
 
 import datetime as dt
 
-from TaskQueue.backends.serializer import PickleSerializer
 from TaskQueue.job import Job, JobStatus
+from TaskQueue.serializers import PickleSerializer
 
 SER = PickleSerializer()
 
@@ -92,23 +92,23 @@ class TestJobMutation:
 
 class TestJobToRecord:
     def test_to_record_keys(self) -> None:
+        # error/result are optional keys: absent until populated, so a fresh
+        # record carries only the envelope + payload.
         d = Job(task_name="a").to_record(SER)
         assert set(d) == {
             "id",
             "task_name",
             "created_at",
             "status",
-            "error",
             "attempts",
             "payload",
-            "result",
             "request_cancel",
         }
 
     def test_envelope_fields_stay_plain(self) -> None:
         d = Job(task_name="a", attempts=2).to_record(SER)
         assert d["task_name"] == "a"
-        assert d["attempts"] == 2
+        assert d["attempts"] == "2"  # stringified: records hold str | bytes only
         assert isinstance(d["created_at"], str)  # isoformat, not a blob
 
     def test_status_serialized_as_value(self) -> None:
@@ -122,15 +122,15 @@ class TestJobToRecord:
         assert payload == {"args": [1, 2, 3], "kwargs": {"x": 1}}
 
     def test_unfinished_job_has_no_result_blob(self) -> None:
-        # Until a job completes, its result field is absent (None), regardless
-        # of status — nothing has been produced yet.
+        # Until a job completes, the result key is absent from the record,
+        # regardless of status — nothing has been produced yet.
         for status in (JobStatus.CREATED, JobStatus.QUEUED, JobStatus.RUNNING):
             j = Job(task_name="a", status=status)
-            assert j.to_record(SER)["result"] is None
+            assert "result" not in j.to_record(SER)
 
     def test_failed_job_has_no_result_blob(self) -> None:
         j = Job(task_name="a", status=JobStatus.FAILED, error="boom")
-        assert j.to_record(SER)["result"] is None
+        assert "result" not in j.to_record(SER)
 
     def test_completed_none_result_is_recorded_and_distinct(self) -> None:
         # The §2.4 case: a task that completes returning None records a present
@@ -138,7 +138,7 @@ class TestJobToRecord:
         # round-trips back to None.
         j = Job(task_name="a", status=JobStatus.COMPLETED, result=None)
         record = j.to_record(SER)
-        assert record["result"] is not None  # present, not absent
+        assert "result" in record  # present, not absent
         assert Job.from_record(record, SER).result is None
 
     def test_roundtrip_preserves_fields(self) -> None:

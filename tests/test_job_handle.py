@@ -10,10 +10,10 @@ import asyncio
 
 import pytest
 
-from TaskQueue.backends.memory import MemoryBackend
-from TaskQueue.backends.serializer import PickleSerializer, Serializer
+from TaskQueue.backends.memory_backend import MemoryBackend
 from TaskQueue.handle import JobHandle
 from TaskQueue.job import Job, JobStatus
+from TaskQueue.serializers import PickleSerializer, Serializer
 
 pytestmark = pytest.mark.timeout(5)
 

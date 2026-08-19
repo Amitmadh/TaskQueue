@@ -2,16 +2,13 @@ import logging
 from importlib.metadata import version
 
 from TaskQueue.backends.interface import Backend
-from TaskQueue.backends.memory import MemoryBackend
-from TaskQueue.backends.serializer import (
-    JSONSerializer,
-    PickleSerializer,
-    Serializer,
-)
-from TaskQueue.exceptions import JobCancelled
+from TaskQueue.backends.memory_backend import MemoryBackend
+from TaskQueue.exceptions import JobCancelled, TaskNameError
 from TaskQueue.handle import JobHandle
 from TaskQueue.job import Job, JobStatus
+from TaskQueue.logger import setup_logging
 from TaskQueue.queue import Queue
+from TaskQueue.serializers import JSONSerializer, PickleSerializer, Serializer
 from TaskQueue.task import Task
 from TaskQueue.worker import Worker
 
@@ -27,10 +24,12 @@ __all__ = [
     "JobCancelled",
     "JobHandle",
     "JobStatus",
+    "TaskNameError",
     "Backend",
     "MemoryBackend",
     "Worker",
     "Serializer",
     "JSONSerializer",
     "PickleSerializer",
+    "setup_logging",
 ]

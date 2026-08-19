@@ -3,7 +3,7 @@
 import inspect
 
 from TaskQueue.backends.interface import Backend
-from TaskQueue.backends.memory import MemoryBackend
+from TaskQueue.backends.memory_backend import MemoryBackend
 
 REQUIRED = {
     "enqueue",

@@ -56,11 +56,9 @@ async def test_join_waits_for_all_children(queue: Queue) -> None:
         await asyncio.sleep(0.05)
         return n
 
-    handles = []
     async with queue.worker(concurrency=4):
         async with queue.group(on_error="collect") as g:
-            for i in range(5):
-                handles.append(await g.spawn(slow, i))
+            handles = [await g.spawn(slow, i) for i in range(5)]
         # the moment the scope exits, every child must already be terminal
         for h in handles:
             assert await h.status() == JobStatus.COMPLETED

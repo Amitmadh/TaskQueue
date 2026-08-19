@@ -4,8 +4,7 @@
 import asyncio
 import logging
 
-from TaskQueue import Queue
-from TaskQueue.backends.memory import MemoryBackend
+from TaskQueue import MemoryBackend, Queue
 
 logging.basicConfig(level=logging.WARNING)
 tq_logger = logging.getLogger("TaskQueue")
@@ -14,7 +13,7 @@ tq_logger.addHandler(logging.StreamHandler())
 tq_logger.propagate = False  # stop bubbling up to root
 
 
-q = Queue(backend=MemoryBackend())
+q = Queue(backend=MemoryBackend(), namespace="base")
 
 
 @q.task
@@ -29,4 +28,5 @@ async def main() -> None:
         print(result)
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -19,9 +19,9 @@ import asyncio
 
 import pytest
 
-from TaskQueue.backends.memory import MemoryBackend
-from TaskQueue.backends.serializer import Serializer
+from TaskQueue.backends.memory_backend import MemoryBackend
 from TaskQueue.job import Job, JobStatus
+from TaskQueue.serializers import Serializer
 
 pytestmark = pytest.mark.timeout(5)
 
@@ -89,13 +89,13 @@ async def test_request_cancel_is_idempotent(serializer: Serializer) -> None:
 # the cancel signal must be observable on the record (not only in-memory)      #
 # --------------------------------------------------------------------------- #
 async def test_request_cancel_persists_to_record(serializer: Serializer) -> None:
-    # guards #4: request_cancel sets record["request_cancel"] = True, not just an
+    # guards #4: request_cancel sets record["request_cancel"] = "1", not just an
     # asyncio.Event — otherwise status()/another process could never see it.
     be = MemoryBackend()
     job = await _enqueue(be, serializer)
-    assert (await be.get_job(job.id))["request_cancel"] is False
+    assert (await be.get_job(job.id))["request_cancel"] == "0"
     await be.request_cancel(job.id)
-    assert (await be.get_job(job.id))["request_cancel"] is True
+    assert (await be.get_job(job.id))["request_cancel"] == "1"
 
 
 async def test_request_cancel_before_claim_is_observable(
@@ -107,7 +107,7 @@ async def test_request_cancel_before_claim_is_observable(
     job = await _enqueue(be, serializer)
     await be.request_cancel(job.id)
     claimed = await be.claim()
-    assert claimed["request_cancel"] is True
+    assert claimed["request_cancel"] == "1"
 
 
 async def test_request_cancel_unknown_job_is_noop() -> None:
@@ -127,7 +127,7 @@ async def test_request_cancel_after_completion_is_noop(serializer: Serializer) -
     await be.request_cancel(job.id)  # arrives too late
     rec = await be.get_job(job.id)
     assert JobStatus(rec["status"]) is JobStatus.COMPLETED
-    assert rec["request_cancel"] is False
+    assert rec["request_cancel"] == "0"
 
 
 # --------------------------------------------------------------------------- #
@@ -142,7 +142,7 @@ async def test_claim_returns_detached_copy(serializer: Serializer) -> None:
     claimed["error"] = "injected"
     stored = await be.get_job(claimed["id"])
     assert stored["status"] == JobStatus.RUNNING.value
-    assert stored["error"] is None
+    assert "error" not in stored  # injected error must not reach storage
 
 
 async def test_get_job_returns_detached_copy(serializer: Serializer) -> None:
@@ -188,7 +188,7 @@ async def test_request_cancel_many_flags_all(serializer: Serializer) -> None:
     jobs = [await _enqueue(be, serializer) for _ in range(3)]
     await be.request_cancel_many([j.id for j in jobs])
     for j in jobs:
-        assert (await be.get_job(j.id))["request_cancel"] is True
+        assert (await be.get_job(j.id))["request_cancel"] == "1"
 
 
 async def test_request_cancel_many_empty_is_noop() -> None:
@@ -209,8 +209,8 @@ async def test_request_cancel_many_tolerates_terminal_and_unknown(
 
     await be.request_cancel_many([live.id, finished.id, "ghost"])  # must not raise
 
-    assert (await be.get_job(live.id))["request_cancel"] is True
-    assert (await be.get_job(finished.id))["request_cancel"] is False
+    assert (await be.get_job(live.id))["request_cancel"] == "1"
+    assert (await be.get_job(finished.id))["request_cancel"] == "0"
     assert JobStatus((await be.get_job(finished.id))["status"]) is JobStatus.COMPLETED
 
 
@@ -230,4 +230,4 @@ async def test_request_cancel_many_flags_a_running_job(serializer: Serializer) -
     claimed = await be.claim()  # QUEUED -> RUNNING
     assert JobStatus(claimed["status"]) is JobStatus.RUNNING
     await be.request_cancel_many([job.id])
-    assert (await be.get_job(job.id))["request_cancel"] is True
+    assert (await be.get_job(job.id))["request_cancel"] == "1"

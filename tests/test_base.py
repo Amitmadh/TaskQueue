@@ -153,7 +153,7 @@ _PROGRAM = textwrap.dedent(
     import asyncio
     from TaskQueue import Queue, MemoryBackend
 
-    q = Queue(backend=MemoryBackend())
+    q = Queue(backend=MemoryBackend(), namespace="smoke")
 
     @q.task
     async def add(x: int, y: int) -> int:
@@ -236,7 +236,7 @@ _CONCURRENCY_PROGRAM = textwrap.dedent(
     import asyncio
     from TaskQueue import Queue, MemoryBackend
 
-    q = Queue(backend=MemoryBackend())
+    q = Queue(backend=MemoryBackend(), namespace="smoke")
     peak = {"current": 0, "max": 0}
 
     @q.task

@@ -89,7 +89,7 @@ class MemoryBackend(Backend):
             JobStatus.CANCELLED.value,
         ):
             return
-        record["request_cancel"] = True
+        record["request_cancel"] = "1"
         logger.debug("cancel requested for job %s", job_id)
         cancel = self._cancels.get(job_id)
         if cancel is not None:

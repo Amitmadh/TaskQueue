@@ -3,8 +3,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any, overload
 
 from TaskQueue.backends.interface import Backend
-from TaskQueue.backends.serializer import JSONSerializer, Serializer
-from TaskQueue.jobGroup import JobGroup, OnError
+from TaskQueue.exceptions import TaskNameError
+from TaskQueue.job_group import JobGroup, OnError
+from TaskQueue.serializers import JSONSerializer, Serializer
 from TaskQueue.task import Task
 from TaskQueue.worker import Worker
 
@@ -12,10 +13,37 @@ logger = logging.getLogger(__name__)
 
 
 class Queue:
-    def __init__(self, backend: Backend, serializer: Serializer | None = None) -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        serializer: Serializer | None = None,
+        *,
+        namespace: str | None = None,
+    ) -> None:
+        """A queue, optionally with a fixed namespace for its task names."""
         self._task_registry: dict[str, Task[Any, Any]] = {}
         self._backend = backend
         self._serializer: Serializer = serializer or JSONSerializer()
+        self._namespace = namespace
+
+    @property
+    def namespace(self) -> str | None:
+        return self._namespace
+
+    def _derive_name(self, func: Callable[..., Any]) -> str:
+        """The default task name"""
+        if self._namespace is not None:
+            return f"{self._namespace}.{func.__name__}"
+        module = func.__module__
+        if module == "__main__":
+            raise TaskNameError(
+                f"cannot derive a name for task {func.__name__!r}: as a script "
+                f"it registers as '__main__.{func.__name__}', but a worker that "
+                f"imports the module registers '<import.path>.{func.__name__}'. "
+                f"Pass Queue(..., namespace='myapp') or "
+                f"@q.task(name='myapp.{func.__name__}')."
+            )
+        return f"{module}.{func.__name__}"
 
     @property
     def backend(self) -> Backend:
@@ -55,12 +83,13 @@ class Queue:
         max_retries: int = 0,
     ) -> Task[P, R] | Callable[[Callable[P, Awaitable[R]]], Task[P, R]]:
         def decorator(f: Callable[P, Awaitable[R]]) -> Task[P, R]:
-            task_name = name or f"{f.__module__}.{f.__name__}"
+            task_name = name or self._derive_name(f)
             if task_name in self._task_registry:
-                logger.warning(
-                    "task %r is already registered; "
-                    "overwriting the previous registration",
-                    task_name,
+                # Rebinding a name silently would point jobs already queued
+                # under it at different code, so this is an error, not a warning.
+                raise TaskNameError(
+                    f"task {task_name!r} is already registered on this queue: "
+                    f"Give one an explicit name (@q.task(name=...))."
                 )
             instance = Task(
                 func=f,
@@ -86,12 +115,11 @@ class Queue:
         on_error: OnError | str = OnError.CANCEL_SIBLINGS,
         deadline: float | None = None,
     ) -> JobGroup:
-        """Open a structured-concurrency scope, entered with ``async with``.
+        """Open a structured-concurrency scope, entered with 'async with'.
 
         The block does not exit until every job spawned into the scope reaches a
-        terminal state, applying the ``on_error`` policy (and ``deadline`` if
-        set). This is the everyday scope: a group opened inside another is
-        effectively its child, since the outer ``async with`` cannot exit until
+        terminal state. a group opened inside another is
+        effectively its child, since the outer 'async with' cannot exit until
         the inner one has.
         """
         return JobGroup(self._backend, on_error=on_error, deadline=deadline)
@@ -104,8 +132,8 @@ class Queue:
     ) -> JobGroup:
         """Open a detached, top-level scope — the explicit fire-and-forget entry.
 
-        Behaves like ``group()`` but documents intent: a root group stands on its
-        own instead of nesting. Spawning into it without ``async with``
+        Behaves like 'group()' but documents intent: a root group stands on its
+        own instead of nesting. Spawning into it without 'async with'
         (``await q.root_group().spawn(...)``) is the one sanctioned way to detach
         work from any enclosing scope, and it is the unit a heartbeat reaper will
         watch in a later phase.

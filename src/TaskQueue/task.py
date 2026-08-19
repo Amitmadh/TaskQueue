@@ -2,9 +2,9 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from TaskQueue.backends.interface import Backend
-from TaskQueue.backends.serializer import JSONSerializer, Serializer
 from TaskQueue.handle import JobHandle
 from TaskQueue.job import Job
+from TaskQueue.serializers import JSONSerializer, Serializer
 
 logger = logging.getLogger(__name__)
 

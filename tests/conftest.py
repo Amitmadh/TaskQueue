@@ -31,8 +31,7 @@ serializer).
 
 import pytest
 
-from TaskQueue import MemoryBackend, Queue
-from TaskQueue.backends.serializer import JSONSerializer, Serializer
+from TaskQueue import JSONSerializer, MemoryBackend, Queue, Serializer
 
 
 @pytest.fixture

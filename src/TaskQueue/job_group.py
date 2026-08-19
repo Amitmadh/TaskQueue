@@ -4,6 +4,7 @@ import asyncio
 import logging
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -29,6 +30,7 @@ class JobGroup:
         on_error: OnError | str = OnError.CANCEL_SIBLINGS,
         deadline: float | None = None,
     ) -> None:
+        self.id: str = uuid4().hex
         self._backend: Backend = backend
         self._handles: dict[str, JobHandle[Any]] = {}
         self._on_error: OnError = OnError(on_error)
@@ -47,7 +49,9 @@ class JobGroup:
         exc_tb: TracebackType | None,
     ) -> None:
         if exc_val is not None:
-            logger.debug("job group: scope body raised; cancelling all children")
+            logger.debug(
+                "group %s: scope body raised; cancelling all children", self.id
+            )
             await self.cancel_all_jobs(self._handles.values())
             return
 
@@ -61,12 +65,23 @@ class JobGroup:
             else:
                 failures = await self._join()
         except TimeoutError:
-            logger.debug("job group: deadline exceeded; cancelling all children")
+            logger.debug(
+                "group %s: deadline exceeded; cancelling all children", self.id
+            )
             await self.cancel_all_jobs(self._handles.values())
             raise
 
         if failures:
-            raise BaseExceptionGroup("one or more jobs in the group failed", failures)
+            logger.debug(
+                "group %s: %d of %d job(s) failed; raising ExceptionGroup",
+                self.id,
+                len(failures),
+                len(self._handles),
+            )
+            raise BaseExceptionGroup(
+                f"one or more jobs in group {self.id} failed", failures
+            )
+        logger.debug("group %s: all %d job(s) finished", self.id, len(self._handles))
 
     async def _join(self) -> list[BaseException]:
         if self._on_error is OnError.IGNORE:
@@ -81,6 +96,7 @@ class JobGroup:
     ) -> JobHandle[R]:
         handle = await task.submit(*args, **kwargs)
         self._handles[handle.job_id] = handle
+        logger.debug("group %s: spawned job %s", self.id, handle.job_id)
         return handle
 
     async def cancel_all_jobs(self, handles: Iterable[JobHandle[Any]]) -> None:
@@ -106,7 +122,9 @@ class JobGroup:
             )
             if pending:
                 logger.debug(
-                    "job group: a child failed; cancelling %d sibling(s)", len(pending)
+                    "group %s: a child failed; cancelling %d sibling(s)",
+                    self.id,
+                    len(pending),
                 )
                 await self._backend.request_cancel_many(
                     [waiters[task].job_id for task in pending]
@@ -120,10 +138,13 @@ class JobGroup:
             await asyncio.gather(*waiters, return_exceptions=True)
 
     async def ignore_mode(self) -> None:
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(handle.result() for handle in self._handles.values()),
             return_exceptions=True,
         )
+        ignored = sum(1 for r in results if isinstance(r, BaseException))
+        if ignored:
+            logger.debug("group %s: ignored %d failure(s)", self.id, ignored)
 
     async def collect_mode(self) -> list[BaseException]:
         results = await asyncio.gather(

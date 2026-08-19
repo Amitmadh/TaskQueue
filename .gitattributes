@@ -1,0 +1,3 @@
+# text=auto: lets Windows users keep CRLF locally,
+# but ensures all code stored in Git stays safely formatted as LF
+* text=auto

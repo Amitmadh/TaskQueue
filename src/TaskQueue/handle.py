@@ -1,9 +1,9 @@
 import asyncio
 
 from TaskQueue.backends.interface import Backend
-from TaskQueue.backends.serializer import Serializer
 from TaskQueue.exceptions import JobCancelled
 from TaskQueue.job import Job, JobStatus
+from TaskQueue.serializers import Serializer
 
 
 class JobHandle[R]:

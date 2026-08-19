@@ -8,8 +8,8 @@ from TaskQueue.job import Job, JobStatus
 
 if TYPE_CHECKING:
     from TaskQueue.backends.interface import Backend
-    from TaskQueue.backends.serializer import Serializer
     from TaskQueue.queue import Queue
+    from TaskQueue.serializers import Serializer
     from TaskQueue.task import Task
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ class Worker:
 
     async def _process(self, record: dict[str, Any]) -> None:
         job = Job.from_record(record, self._serializer)
-        logger.debug("claimed job %s (task=%s)", job.id, job.task_name)
+        logger.debug("processing job %s (task=%s)", job.id, job.task_name)
         if job.request_cancel:
             job.status = JobStatus.CANCELLED
             logger.debug("job %s cancelled", job.id)

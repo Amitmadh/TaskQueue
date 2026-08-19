@@ -4,8 +4,7 @@
 
 import asyncio
 
-from TaskQueue import Queue
-from TaskQueue.backends.memory import MemoryBackend
+from TaskQueue import MemoryBackend, Queue
 
 q = Queue(backend=MemoryBackend())
 

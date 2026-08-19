@@ -9,9 +9,9 @@ import asyncio
 
 import pytest
 
-from TaskQueue.backends.memory import MemoryBackend
-from TaskQueue.backends.serializer import Serializer
+from TaskQueue.backends.memory_backend import MemoryBackend
 from TaskQueue.job import Job, JobStatus
+from TaskQueue.serializers import Serializer
 
 pytestmark = pytest.mark.timeout(5)
 

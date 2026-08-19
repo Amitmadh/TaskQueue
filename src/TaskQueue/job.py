@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Any, Self
 from uuid import uuid4
 
-from TaskQueue.backends.serializer import Serializer
+from TaskQueue.serializers import Serializer
 
 
 class JobStatus(StrEnum):
@@ -46,49 +46,47 @@ class Job:
     def __hash__(self) -> int:
         return hash(self.id)
 
-    def to_record(self, serializer: Serializer) -> dict[str, Any]:
-        """Backend storage form (a record, == a Redis hash).
+    def to_record(self, serializer: Serializer) -> dict[str, str | bytes]:
+        """Backend storage form.
 
-        Control/envelope fields stay plain so the backend can set them
-        (e.g. `status` on claim) without deserializing. Only the user payload
-        (args/kwargs) and the result are opaque serialized blobs.
+        Control fields stay plain *strings* (ints stringified,
+        'request_cancel' as "0"/"1") so the backend can set them without deserializing;
+        only the user payload (args/kwargs) and the result are opaque
+        'bytes' blobs from the serializer.
+        'error' and 'result' are written only once populated — an absent key
+        means None.
         """
-        return {
+        record: dict[str, str | bytes] = {
             "id": self.id,
             "task_name": self.task_name,
             "created_at": self.created_at.isoformat(),
             "status": self.status.value,
-            "error": self.error,
-            "attempts": self.attempts,
-            "request_cancel": self.request_cancel,
+            "attempts": str(self.attempts),
+            "request_cancel": str(int(self.request_cancel)),
             "payload": serializer.dumps(
                 {"args": list(self.args), "kwargs": self.kwargs}
             ),
-            "result": (
-                serializer.dumps(self.result)
-                if self.status is JobStatus.COMPLETED
-                else None
-            ),
         }
+        if self.error is not None:
+            record["error"] = self.error
+        if self.status is JobStatus.COMPLETED:
+            record["result"] = serializer.dumps(self.result)
+        return record
 
     @classmethod
     def from_record(cls, record: dict[str, Any], serializer: Serializer) -> Self:
         job = object.__new__(cls)
-        payload = (
-            serializer.loads(record["payload"])
-            if record["payload"] is not None
-            else None
-        )
-        job.result = (
-            serializer.loads(record["result"]) if record["result"] is not None else None
-        )
+        raw_payload = record.get("payload")
+        payload = serializer.loads(raw_payload) if raw_payload is not None else None
+        raw_result = record.get("result")
+        job.result = serializer.loads(raw_result) if raw_result is not None else None
         job.id = record["id"]
         job.task_name = record["task_name"]
         job.created_at = datetime.fromisoformat(record["created_at"])
         job.status = JobStatus(record["status"])
-        job.error = record["error"]
+        job.error = record.get("error")
         job.args = tuple(payload["args"]) if payload is not None else ()
         job.kwargs = dict(payload["kwargs"]) if payload is not None else {}
-        job.request_cancel = record.get("request_cancel", False)
-        job.attempts = record.get("attempts", 0)
+        job.request_cancel = bool(int(record.get("request_cancel", 0)))
+        job.attempts = int(record.get("attempts", 0))
         return job

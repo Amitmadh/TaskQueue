@@ -45,7 +45,10 @@ def test_submodules_import_without_cycle() -> None:
         "TaskQueue.handle",
         "TaskQueue.job",
         "TaskQueue.backends.interface",
-        "TaskQueue.backends.memory",
-        "TaskQueue.backends.serializer",
+        "TaskQueue.backends.memory_backend",
+        "TaskQueue.serializers",
+        "TaskQueue.serializers.interface",
+        "TaskQueue.serializers.json_serializer",
+        "TaskQueue.serializers.pickle_serializer",
     ):
         assert importlib.import_module(mod) is not None
