@@ -2,7 +2,7 @@
 
 All notable changes documented here.
 
-## [0.3.0] - 2026-08-19
+## [0.3.0] - 2026-08-23
 
 ### Added
 
@@ -35,11 +35,49 @@ All notable changes documented here.
   glance away instead of a job that quietly never runs.
 - **`examples/demo.py`** — the six scenarios (round-trip, fan-out, fail-fast, explicit
   cancellation, scope deadline, `on_error="collect"`) end to end in one process.
-- **`RedisBackend` — skeleton only, not usable.** `enqueue`, `claim` and `get_job` are
-  implemented against a Redis hash per job plus `BLMOVE` from `queue` to `processing`;
-  `save`, `release`, `take_result`, `request_cancel`, `request_cancel_many` and
-  `wait_cancel` still raise `NotImplementedError`. A worker cannot complete a single job
-  against it yet. Phase 3 stays open.
+- **`RedisBackend` — the whole `Backend` Protocol, against real Redis.** A hash per job,
+  `BLMOVE` from `queue` into a per-worker `processing:{consumer_id}` list, pub/sub for
+  result and cancellation notification. Every check-then-act guard is a Lua script rather
+  than a pipeline, because `MULTI` cannot branch — `pipe.hget()` returns the pipeline, not
+  a value — so "if the job still exists and is not terminal, then write" is one atomic
+  step instead of a read followed by a hopeful write. Import it from
+  `TaskQueue.backends.redis_backend`; the driver is an optional extra
+  (`pip install TaskQueue[redis]`) so the core installs without it.
+- **Reliable delivery, including for a worker that dies without warning.** Each process
+  writes its own timestamp into a `workers` sorted set every `heartbeat_interval`
+  seconds. Any worker whose last beat is older than the backend's `worker_ttl` is
+  presumed dead, and the next reaper pass drains its processing list back onto the queue,
+  resetting each job to QUEUED and incrementing `attempts`. The reaper runs in every
+  worker and takes **no distributed lock**: the reclaim is a single Lua script, so
+  concurrent reapers cost a wasted round trip rather than a duplicated job. A lock here
+  would only add a way to be wrong — one that expired mid-operation would break the very
+  property it was meant to protect.
+- **`Worker.drain(timeout)`** — stop claiming, let in-flight jobs finish, and cancel
+  whatever is left when the deadline passes. Returns `True` if the pool wound down with
+  nothing running, `False` if it had to cancel, so a caller can log the difference.
+  `taskqueue worker` now drains on the first SIGINT/SIGTERM and cancels on the second,
+  which turns an ordinary restart from "re-run whatever was in flight" into "finish it".
+- **`result_ttl`** — a terminal record now expires rather than living forever when nobody
+  calls `take_result()`. Fire-and-forget jobs no longer grow the keyspace without bound.
+  Non-positive values are rejected at construction, because `EXPIRE key 0` deletes
+  immediately and would silently destroy every result the moment it was written.
+- **`--drain-timeout` and `--heartbeat-interval`** on `taskqueue worker`, plus exit code
+  `3` for settings that parse fine but would misbehave: the CLI refuses to start when the
+  heartbeat interval leaves no margin against the backend's `worker_ttl`, since every
+  worker would then be presumed dead between its own beats and have its running jobs
+  reclaimed by a peer. `worker_ttl` itself stays where the backend is built — it is a
+  fleet-wide agreement, and behind a per-process flag two workers with different values
+  would reap each other.
+- **The conformance suite runs twice.** The `backend` fixture is parameterised over
+  `MemoryBackend` and `RedisBackend`, so every Phase 2 property — fail-fast sibling
+  cancellation, nested scope propagation, deadlines, shutdown redelivery — is now checked
+  against real Redis commands rather than live Python objects. A divergence between the
+  two backends is a test failure instead of a production surprise.
+- **Cross-process tests against a real server.** `test_two_worker_processes_split_jobs`
+  proves `BLMOVE` is atomic across processes; `test_job_reclaimed_after_worker_crash`
+  SIGKILLs a worker mid-job and asserts a peer reclaims the lease. Neither can run on
+  fakeredis, which lives inside the test process, so they skip when no Redis is reachable
+  and CI runs a `redis:7` service container.
 - **`.gitattributes`** (`* text=auto eol=lf`). The repository had drifted into mixed line
   endings, so an editor rewriting a file end to end was showing up as a whole-file diff.
 
@@ -65,9 +103,31 @@ All notable changes documented here.
   package are unaffected.
 - **`JobGroup` has an `id`**, stamped on its log lines and into the `BaseExceptionGroup`
   message so concurrent scopes can be told apart. Phase 4 will persist it.
+- **`Backend.claim()` returns `dict | None`** and must never block indefinitely. It used
+  to loop internally until it had a job, which meant a worker parked in `claim` could not
+  observe a shutdown request — `drain()` waited forever on a pool that was, by definition,
+  idle. Returning `None` after a bounded interval hands control back to the worker loop,
+  which is what makes a graceful drain possible at all.
+- **The `Backend` Protocol grew to eleven methods**, adding `heartbeat()` and
+  `reap()`. `MemoryBackend` implements both as no-ops: a single process cannot outlive
+  its own leases, so it has no liveness protocol to run.
+- **A failing backend no longer spins.** The worker loop retried `claim()` with no
+  backoff, so a Redis outage burned a core and flooded the log — thousands of tracebacks a
+  second. It now waits a second between attempts.
+- **`dev` moved from `[project.optional-dependencies]` to `[dependency-groups]`.** As an
+  extra it was neither installed by a bare `uv sync` (so a changed spec left a stale venv
+  behind — the symptom was fakeredis without its Lua support and 52 failing tests) nor
+  something end users should be able to `pip install TaskQueue[dev]` and get pyright with.
 - Package version `0.0.2` → `0.3.0`. It had never been bumped past the initial
   scaffolding, so `taskqueue --version` and the `0.1.0` / `0.2.0` entries below
   disagreed; this realigns them.
+
+### Deferred
+
+- **The `execute_at` sorted set and scheduler coroutine**, listed under Phase 3 in the
+  build plan, are not built. Nothing schedules yet — there is no `submit(delay=...)` and
+  no `execute_at` on `Job` — so it would be a mechanism with no caller and no way to demo
+  it. Its real driver is retry backoff, and it lands with retries in Phase 5.
 
 ## [0.2.0] - 2026-07-02
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "TaskQueue"
-version = "0.0.3"
+version = "0.3.0"
 description = "A distributed async task queue with structured concurrency and end-to-end type safety."
 authors = [
   { name="Amit Madhala", email="amitmadhala@gmail.com" },
@@ -17,23 +17,23 @@ dependencies = []
 taskqueue = "TaskQueue.cli:main"
 
 [project.optional-dependencies]
+# The RedisBackend driver. Kept out of `dependencies` so the core installs
+# without it; `TaskQueue.backends.get("redis")` names this extra when absent.
 redis = [
     "redis>=5.0",
 ]
-
-[dependency-groups]
 dev = [
-    "check-jsonschema>=0.38.0",
-    "fakeredis[lua]>=2.20",
-    "pre-commit>=3.6",
-    "pyright>=1.1.410",
+    "pyright>=1.1.409",
     "pytest>=9.0.3",
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
     "pytest-timeout>=2.4.0",
-    "redis>=5.0",
     "ruff>=0.15.13",
     "tomli>=2.4.1",
+    "pre-commit>=3.6",
+    "fakeredis[lua]>=2.20",
+    "redis>=5.0",
+    "pyright>=1.1.410",
 ]
 
 # ruff setup

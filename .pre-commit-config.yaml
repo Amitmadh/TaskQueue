@@ -33,14 +33,14 @@ repos:
     hooks:
       - id: pytest-fast
         name: 🧪 test · Run fast tests
-        entry: uv run pytest tests
+        entry: uv run --locked pytest tests
         language: system
         args: []
         pass_filenames: false
         always_run: true
       - id: pyright
         name: "🐍 python · Check types"
-        entry: uv run pyright
+        entry: uv run --locked pyright
         language: system
         args: []
         pass_filenames: false
