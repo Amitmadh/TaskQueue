@@ -73,7 +73,7 @@ async def test_request_cancel_wakes_a_pending_waiter(serializer: Serializer) -> 
 
 async def test_wait_cancel_unknown_job_raises() -> None:
     be = MemoryBackend()
-    with pytest.raises(RuntimeError):  # mirrors wait()'s contract for unknown ids
+    with pytest.raises(KeyError):
         await be.wait_cancel("nope")
 
 

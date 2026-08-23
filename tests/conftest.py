@@ -1,4 +1,9 @@
-"""Shared fixtures + the contract these tests encode (Phases 1–2, in-memory).
+"""Shared fixtures + the contract these tests encode.
+
+Every test taking `backend` (or `queue`, which is built from it) runs twice:
+once against MemoryBackend and once against RedisBackend on fakeredis. The
+contract below is what both must satisfy, so a divergence between the two is a
+test failure rather than something discovered in production.
 
 Target contract (current API):
   exports     : Queue, Task, Job, JobStatus, JobHandle, JobCancelled, Backend,
@@ -7,7 +12,8 @@ Target contract (current API):
   Job         : keyword-constructable; to_record/from_record(serializer) round-trip;
                 identity equality (by id)
   Serializer  : dumps/loads protocol; JSONSerializer default (Pickle too)
-  Backend     : {enqueue(job_id, record), claim() -> record, get_job(job_id) -> record,
+  Backend     : {enqueue(job_id, record), claim() -> record | None (None once the
+                claim interval lapses), get_job(job_id) -> record,
                 save(job_id, record, *, done), release(job_id),
                 take_result(job_id) -> record, request_cancel(job_id),
                 wait_cancel(job_id)}
@@ -18,7 +24,8 @@ Target contract (current API):
   Queue       : .group(...) / .root_group(...) open structured-concurrency scopes
   Worker      : async context manager; survives unknown task names and task errors;
                 cancels a RUNNING job on request_cancel; redelivers an in-flight
-                lease on shutdown (at-least-once)
+                lease on shutdown (at-least-once); drain(timeout=None) stops
+                claiming and awaits in-flight jobs, cancelling past the deadline
   JobGroup    : async-with scope; await g.spawn(task, *args) -> JobHandle;
                 on_error in {cancel_siblings (default), collect, ignore}; deadline=
 
@@ -29,9 +36,11 @@ via Job.to_record(serializer) and read them back via Job.from_record(record,
 serializer).
 """
 
+import fakeredis
 import pytest
 
-from TaskQueue import JSONSerializer, MemoryBackend, Queue, Serializer
+from TaskQueue import Backend, JSONSerializer, MemoryBackend, Queue, Serializer
+from TaskQueue.backends.redis_backend import RedisBackend
 
 
 @pytest.fixture
@@ -39,11 +48,13 @@ def serializer() -> Serializer:
     return JSONSerializer()
 
 
-@pytest.fixture
-def backend() -> MemoryBackend:
+@pytest.fixture(params=["memory", "redis"])
+def backend(request: pytest.FixtureRequest) -> Backend:
+    if request.param == "redis":
+        return RedisBackend(fakeredis.FakeAsyncRedis())
     return MemoryBackend()
 
 
 @pytest.fixture
-def queue(backend: MemoryBackend) -> Queue:
+def queue(backend: Backend) -> Queue:
     return Queue(backend=backend)

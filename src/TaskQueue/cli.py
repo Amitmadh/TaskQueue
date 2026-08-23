@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from TaskQueue import __version__, backends, serializers
 from TaskQueue.logger import setup_logging
 from TaskQueue.queue import Queue
+from TaskQueue.worker import DEFAULT_HEARTBEAT_INTERVAL_SECONDS
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -22,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 EXIT_OK = 0
 EXIT_BAD_TARGET = 1
+EXIT_BAD_CONFIG = 3
+
+_MIN_BEATS_PER_TTL = 3
 
 _BACKEND_SUFFIX = "_backend"
 _SERIALIZER_SUFFIX = "_serializer"
@@ -29,6 +33,25 @@ _SERIALIZER_SUFFIX = "_serializer"
 
 class TargetError(Exception):
     """The '<module>:<attr>' target could not be resolved to a 'Queue'."""
+
+
+class ConfigError(Exception):
+    """Settings that would misbehave at runtime rather than fail at startup."""
+
+
+def check_liveness(queue: Queue, heartbeat_interval: float) -> None:
+    """Refuse a heartbeat interval too close to the backend's worker TTL."""
+    worker_ttl: object = getattr(queue.backend, "worker_ttl", None)
+    if not isinstance(worker_ttl, int):
+        return
+    if worker_ttl < heartbeat_interval * _MIN_BEATS_PER_TTL:
+        raise ConfigError(
+            f"--heartbeat-interval {heartbeat_interval:g}s is too long for this "
+            f"backend's worker_ttl of {worker_ttl}s."
+            f"Use an interval of at most {worker_ttl / _MIN_BEATS_PER_TTL:g}s, or "
+            f"raise worker_ttl to at least "
+            f"{heartbeat_interval * _MIN_BEATS_PER_TTL:g}s where the backend is built."
+        )
 
 
 def available(package_path: Iterable[str], suffix: str) -> list[str]:
@@ -65,16 +88,20 @@ def resolve_queue(spec: str) -> Queue:
     return target
 
 
-async def run_worker(queue: Queue, concurrency: int) -> None:
-    """Serve jobs until SIGINT/SIGTERM, then stop the pool.
+async def run_worker(
+    queue: Queue,
+    concurrency: int,
+    drain_timeout: float | None = None,
+    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+) -> None:
+    """Serve jobs until SIGINT/SIGTERM, then drain the pool.
 
-    Shutdown today is *cancel*, not drain: leaving the ``async with`` cancels
-    the worker loops, and a job interrupted mid-run is `release`d back to
-    QUEUED for redelivery. Correct at-least-once behaviour, but it discards
-    in-flight progress, so a rolling restart re-runs whatever was running. A
-    graceful drain (stop claiming, await in-flight, cancel on a deadline) needs
-    `claim` to yield periodically — it currently blocks indefinitely — so it
-    lands together with the short-timeout BLMOVE loop in the Redis backend.
+    Shutdown is two-stage. The first signal stops claiming and waits for
+    in-flight jobs to finish. A second signal — or 'drain_timeout' elapsing —
+    cancels them, and a job cancelled mid-run is 'release'd back to QUEUED for
+    redelivery. That fallback is correct at-least-once behaviour but discards
+    in-flight progress, which is exactly what the drain exists to avoid paying
+    for on an ordinary restart.
     """
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -95,10 +122,34 @@ async def run_worker(queue: Queue, concurrency: int) -> None:
     else:
         logger.warning("no tasks are registered on this queue; every job will fail")
 
-    async with queue.worker(concurrency=concurrency):
+    async with queue.worker(
+        concurrency=concurrency, heartbeat_interval=heartbeat_interval
+    ) as workers:
         logger.info("worker ready (concurrency=%d); ctrl-c to stop", concurrency)
         await stop.wait()
-        logger.info("signal received; stopping worker pool")
+
+        stop.clear()
+        logger.info(
+            "signal received; draining (timeout=%ss, ctrl-c again to cancel)",
+            drain_timeout,
+        )
+
+        drain_task = asyncio.create_task(workers.drain(drain_timeout))
+        stop_task = asyncio.create_task(stop.wait())
+        done, pending = await asyncio.wait(
+            (drain_task, stop_task), return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.wait(pending)
+
+        if drain_task not in done:
+            logger.warning("second signal; cancelling in-flight jobs for redelivery")
+        elif drain_task.result():
+            logger.info("drain complete; stopping worker pool")
+        else:
+            logger.warning("drain deadline passed; in-flight jobs will be redelivered")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,6 +177,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="jobs served in parallel by this process (default: 1)",
     )
     worker.add_argument(
+        "--drain-timeout",
+        type=float,
+        default=30.0,
+        help="seconds to let in-flight jobs finish on shutdown before "
+        "cancelling them for redelivery (default: 30)",
+    )
+    worker.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        help="seconds between liveness beats; must be at most a third of the "
+        f"backend's worker_ttl (default: {DEFAULT_HEARTBEAT_INTERVAL_SECONDS:g})",
+    )
+    worker.add_argument(
         "-l",
         "--log-level",
         default="info",
@@ -148,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(available(serializers.__path__, _SERIALIZER_SUFFIX)))
         return EXIT_OK
 
+    setup_logging(args.log_level.upper())
+
     cwd = str(Path.cwd())
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
@@ -158,10 +225,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"taskqueue: {exc}", file=sys.stderr)
         return EXIT_BAD_TARGET
 
-    setup_logging(args.log_level.upper())
+    try:
+        check_liveness(queue, args.heartbeat_interval)
+    except ConfigError as exc:
+        print(f"taskqueue: {exc}", file=sys.stderr)
+        return EXIT_BAD_CONFIG
 
     try:
-        asyncio.run(run_worker(queue, args.concurrency))
+        asyncio.run(
+            run_worker(
+                queue,
+                args.concurrency,
+                args.drain_timeout,
+                args.heartbeat_interval,
+            )
+        )
     except KeyboardInterrupt:
         logger.info("interrupted; worker pool stopped")
     return EXIT_OK

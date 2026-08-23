@@ -7,7 +7,7 @@ from TaskQueue.exceptions import TaskNameError
 from TaskQueue.job_group import JobGroup, OnError
 from TaskQueue.serializers import JSONSerializer, Serializer
 from TaskQueue.task import Task
-from TaskQueue.worker import Worker
+from TaskQueue.worker import DEFAULT_HEARTBEAT_INTERVAL_SECONDS, Worker
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +106,14 @@ class Queue:
             return decorator(func)
         return decorator
 
-    def worker(self, concurrency: int = 1) -> Worker:
-        return Worker(self, concurrency=concurrency)
+    def worker(
+        self,
+        concurrency: int = 1,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    ) -> Worker:
+        return Worker(
+            self, concurrency=concurrency, heartbeat_interval=heartbeat_interval
+        )
 
     def group(
         self,

@@ -11,6 +11,16 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.12"]
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
@@ -26,5 +36,9 @@ jobs:
         run: uv run ruff format --check .
       - name: Type check
         run: uv run pyright
+      - name: Verify Redis is reachable
+        run: uv run python -c "import redis; redis.Redis(port=6379).ping()"
       - name: Test
+        env:
+          TASKQUEUE_TEST_REDIS_URL: redis://localhost:6379/15
         run: uv run pytest --cov=TaskQueue --cov-report=xml

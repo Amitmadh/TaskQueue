@@ -152,3 +152,89 @@ async def test_inflight_job_is_redelivered_on_shutdown(queue: Queue) -> None:
     unblock.set()
     async with queue.worker():
         assert await asyncio.wait_for(handle.result(), 3) == 42
+
+
+# --------------------------------------------------------------------------
+# graceful drain
+# --------------------------------------------------------------------------
+
+
+async def test_drain_waits_for_an_in_flight_job(queue: Queue) -> None:
+    started = asyncio.Event()
+
+    @queue.task
+    async def slow() -> int:
+        started.set()
+        await asyncio.sleep(0.2)
+        return 7
+
+    async with queue.worker() as w:
+        handle = await slow.submit()
+        await asyncio.wait_for(started.wait(), 3)
+        assert await asyncio.wait_for(w.drain(), 5) is True
+        assert w.running is False
+        assert all(task.done() for task in w.workers)
+        assert await asyncio.wait_for(handle.result(), 3) == 7
+
+
+async def test_drain_returns_on_an_idle_pool(queue: Queue) -> None:
+    async with queue.worker(concurrency=2) as w:
+        await asyncio.sleep(0.05)
+        assert await asyncio.wait_for(w.drain(), 5) is True
+        assert all(task.done() for task in w.workers)
+
+
+async def test_drain_timeout_cancels_and_redelivers(queue: Queue) -> None:
+    started = asyncio.Event()
+    unblock = asyncio.Event()
+
+    @queue.task
+    async def wedged() -> int:
+        started.set()
+        await unblock.wait()
+        return 1
+
+    async with queue.worker() as w:
+        handle = await wedged.submit()
+        await asyncio.wait_for(started.wait(), 3)
+        assert await asyncio.wait_for(w.drain(timeout=0.1), 5) is False
+        assert all(task.done() for task in w.workers)
+        assert await handle.status() == JobStatus.QUEUED
+
+    unblock.set()
+    async with queue.worker():
+        assert await asyncio.wait_for(handle.result(), 3) == 1
+
+
+async def test_concurrent_drains_all_wait_for_the_pool(queue: Queue) -> None:
+    started = asyncio.Event()
+
+    @queue.task
+    async def slow() -> int:
+        started.set()
+        await asyncio.sleep(0.2)
+        return 3
+
+    async with queue.worker() as w:
+        handle = await slow.submit()
+        await asyncio.wait_for(started.wait(), 3)
+        assert await asyncio.wait_for(asyncio.gather(w.drain(), w.drain()), 5) == [
+            True,
+            True,
+        ]
+        assert all(task.done() for task in w.workers)
+        assert await asyncio.wait_for(handle.result(), 3) == 3
+
+
+async def test_drain_after_the_pool_stopped_is_a_noop(queue: Queue) -> None:
+    async with queue.worker() as w:
+        pass
+    assert await asyncio.wait_for(w.drain(), 5) is True
+    assert w.running is False
+
+
+async def test_drain_before_the_pool_starts_is_a_noop(queue: Queue) -> None:
+    w = queue.worker()
+    assert await asyncio.wait_for(w.drain(), 5) is True
+    assert w.running is False
+    assert w.workers == []

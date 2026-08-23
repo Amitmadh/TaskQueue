@@ -45,12 +45,15 @@ async def test_claim_returns_record_and_marks_running(serializer: Serializer) ->
     assert JobStatus(claimed["status"]) is JobStatus.RUNNING
 
 
-async def test_claim_blocks_until_a_job_is_available(serializer: Serializer) -> None:
+async def test_claim_waits_for_a_job_then_yields_none(serializer: Serializer) -> None:
     be = MemoryBackend()
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(be.claim(), timeout=0.1)
+    assert await asyncio.wait_for(be.claim(), timeout=3) is None
+
     job = await _enqueue(be, serializer)
     claimed = await asyncio.wait_for(be.claim(), timeout=1)
+    assert claimed is not None
     assert claimed["id"] == job.id
 
 
@@ -121,7 +124,7 @@ async def test_take_result_blocks_until_done(serializer: Serializer) -> None:
 
 async def test_take_result_unknown_job_raises() -> None:
     be = MemoryBackend()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyError):
         await be.take_result("nope")
 
 

@@ -15,6 +15,8 @@ REQUIRED = {
     "request_cancel",
     "request_cancel_many",
     "wait_cancel",
+    "heartbeat",
+    "reap",
 }
 
 

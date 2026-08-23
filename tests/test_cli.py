@@ -23,11 +23,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from TaskQueue import __version__
+from TaskQueue import MemoryBackend, __version__
 from TaskQueue.cli import (
+    ConfigError,
     TargetError,
     available,
     build_parser,
+    check_liveness,
     main,
     resolve_queue,
 )
@@ -54,13 +56,27 @@ _ONE_QUEUE = """
 def test_worker_defaults() -> None:
     args = build_parser().parse_args(["worker", "myapp:q"])
     assert (args.command, args.target, args.concurrency) == ("worker", "myapp:q", 1)
+    assert args.drain_timeout == 30.0
+    assert args.heartbeat_interval == 10.0
 
 
 def test_worker_flags() -> None:
     args = build_parser().parse_args(
-        ["worker", "myapp:q", "-c", "8", "--log-level", "debug"]
+        [
+            "worker",
+            "myapp:q",
+            "-c",
+            "8",
+            "--log-level",
+            "debug",
+            "--drain-timeout",
+            "5",
+            "--heartbeat-interval",
+            "2.5",
+        ]
     )
-    assert (args.concurrency, args.log_level) == (8, "debug")
+    assert (args.concurrency, args.log_level, args.drain_timeout) == (8, "debug", 5.0)
+    assert args.heartbeat_interval == 2.5
 
 
 @pytest.mark.parametrize(
@@ -298,3 +314,161 @@ def test_console_script_imports_a_target_from_the_working_directory(
     if sys.platform != "win32":
         assert process.returncode == 0, output
         assert "worker pool stopped" in output, output
+
+
+_SLOW_JOB_QUEUE = """
+    import asyncio
+
+    from TaskQueue import MemoryBackend, Queue
+
+    q = Queue(MemoryBackend())
+
+    @q.task
+    async def slow() -> str:
+        print("JOB STARTED", flush=True)
+        await asyncio.sleep({seconds})
+        print("JOB FINISHED", flush=True)
+        return "ok"
+
+    asyncio.run(slow.submit())
+"""
+
+
+def _start_worker(
+    tmp_path: Path, module: str, *args: str, job_seconds: float = 1.0
+) -> subprocess.Popen[str]:
+    script = _console_script()
+    if not script.exists():  # pragma: no cover - editable install without scripts
+        pytest.skip(f"console script not installed at {script}")
+    (tmp_path / f"{module}.py").write_text(
+        textwrap.dedent(_SLOW_JOB_QUEUE).format(seconds=job_seconds), encoding="utf-8"
+    )
+    return subprocess.Popen(
+        [str(script), "worker", f"{module}:q", *args],
+        cwd=tmp_path,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+
+def _read_until(process: subprocess.Popen[str], marker: str) -> list[str]:
+    assert process.stdout is not None
+    seen: list[str] = []
+    for line in process.stdout:
+        seen.append(line)
+        if marker in line:
+            return seen
+    pytest.fail(f"never saw {marker!r} before EOF:\n{''.join(seen)}")
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal delivery only")
+def test_sigterm_drains_the_in_flight_job(tmp_path: Path) -> None:
+    process = _start_worker(tmp_path, "cli_drain")
+    try:
+        seen = _read_until(process, "JOB STARTED")
+        process.terminate()
+        rest, _ = process.communicate(timeout=20)
+    except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
+        process.kill()
+        pytest.fail("worker did not exit after terminate()")
+
+    output = "".join(seen) + rest
+    assert "JOB FINISHED" in output, output
+    assert "drain complete" in output, output
+    assert process.returncode == 0, output
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal delivery only")
+def test_drain_timeout_cancels_the_in_flight_job(tmp_path: Path) -> None:
+    process = _start_worker(
+        tmp_path, "cli_drain_timeout", "--drain-timeout", "0", job_seconds=30
+    )
+    try:
+        seen = _read_until(process, "JOB STARTED")
+        process.terminate()
+        rest, _ = process.communicate(timeout=20)
+    except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
+        process.kill()
+        pytest.fail("worker did not exit after terminate()")
+
+    output = "".join(seen) + rest
+    assert "JOB FINISHED" not in output, output
+    assert "drain timed out" in output, output
+    assert "drain deadline passed" in output, output
+    assert "drain complete" not in output, output
+    assert process.returncode == 0, output
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal delivery only")
+def test_second_signal_abandons_the_drain(tmp_path: Path) -> None:
+    process = _start_worker(
+        tmp_path, "cli_second_signal", "--drain-timeout", "300", job_seconds=30
+    )
+    try:
+        seen = _read_until(process, "JOB STARTED")
+        process.terminate()
+        seen += _read_until(process, "signal received; draining")
+        process.terminate()
+        rest, _ = process.communicate(timeout=20)
+    except subprocess.TimeoutExpired:  # pragma: no cover - only on a hang
+        process.kill()
+        pytest.fail("worker did not exit after the second terminate()")
+
+    output = "".join(seen) + rest
+    assert "JOB FINISHED" not in output, output
+    assert "second signal" in output, output
+    assert process.returncode == 0, output
+
+
+# --------------------------------------------------------------------------
+# liveness settings
+# --------------------------------------------------------------------------
+
+
+def _queue_with_ttl(worker_ttl: int) -> Queue:
+    import fakeredis
+
+    from TaskQueue.backends.redis_backend import RedisBackend
+
+    return Queue(RedisBackend(fakeredis.FakeAsyncRedis(), worker_ttl=worker_ttl))
+
+
+@pytest.mark.parametrize("interval", [10.0, 5.0, 1.0])
+def test_liveness_accepts_an_interval_with_margin(interval: float) -> None:
+    check_liveness(_queue_with_ttl(30), interval)
+
+
+@pytest.mark.parametrize("interval", [10.1, 15.0, 60.0])
+def test_liveness_rejects_an_interval_too_close_to_the_ttl(interval: float) -> None:
+    # Every worker would be presumed dead between its own beats, so peers would
+    # reclaim jobs that are still running.
+    with pytest.raises(ConfigError, match="worker_ttl"):
+        check_liveness(_queue_with_ttl(30), interval)
+
+
+def test_liveness_ignores_a_backend_without_a_ttl() -> None:
+    check_liveness(Queue(MemoryBackend()), 3600.0)
+
+
+def test_bad_liveness_settings_exit_three(
+    module_factory: Callable[[str, str], str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Distinct from 1 (bad target) and 2 (usage), so a supervisor can tell a
+    # misconfigured deployment from a typo.
+    name = module_factory(
+        "cli_liveness",
+        """
+        import fakeredis
+
+        from TaskQueue import Queue
+        from TaskQueue.backends.redis_backend import RedisBackend
+
+        q = Queue(RedisBackend(fakeredis.FakeAsyncRedis(), worker_ttl=5))
+        """,
+    )
+    assert main(["worker", f"{name}:q", "--heartbeat-interval", "10"]) == 3
+    assert "worker_ttl" in capsys.readouterr().err

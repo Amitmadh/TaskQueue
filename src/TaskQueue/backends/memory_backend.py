@@ -7,6 +7,8 @@ from TaskQueue.job import JobStatus
 
 logger = logging.getLogger(__name__)
 
+_CLAIM_TIMEOUT_SECONDS = 1
+
 
 class MemoryBackend(Backend):
     def __init__(self) -> None:
@@ -23,8 +25,11 @@ class MemoryBackend(Backend):
         await self._queue.put(job_id)
         logger.debug("enqueued job %s", job_id)
 
-    async def claim(self) -> dict[str, Any]:
-        job_id = await self._queue.get()
+    async def claim(self) -> dict[str, Any] | None:
+        try:
+            job_id = await asyncio.wait_for(self._queue.get(), _CLAIM_TIMEOUT_SECONDS)
+        except TimeoutError:
+            return None
         record = self._jobs[job_id]
         # The RUNNING transition is a single-field write — no deserialize.
         record["status"] = JobStatus.RUNNING.value
@@ -76,7 +81,7 @@ class MemoryBackend(Backend):
         self._cancels.pop(job_id, None)
         record = self._jobs.pop(job_id, None)
         if record is None:
-            raise RuntimeError(f"cannot take result of unknown job {job_id!r}")
+            raise KeyError(f"job {job_id!r} not found")
         return dict(record)
 
     async def request_cancel(self, job_id: str) -> None:
@@ -89,6 +94,7 @@ class MemoryBackend(Backend):
             JobStatus.CANCELLED.value,
         ):
             return
+
         record["request_cancel"] = "1"
         logger.debug("cancel requested for job %s", job_id)
         cancel = self._cancels.get(job_id)
@@ -102,5 +108,11 @@ class MemoryBackend(Backend):
     async def wait_cancel(self, job_id: str) -> None:
         cancel = self._cancels.get(job_id)
         if cancel is None:
-            raise RuntimeError(f"cannot watch cancellation for unknown job {job_id!r}")
+            raise KeyError(f"job {job_id!r} not found")
         await cancel.wait()
+
+    async def heartbeat(self) -> None:
+        return
+
+    async def reap(self) -> int:
+        return 0

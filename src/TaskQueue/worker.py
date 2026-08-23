@@ -14,9 +14,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 10.0
+_CLAIM_ERROR_BACKOFF_SECONDS = 1.0
+
 
 class Worker:
-    def __init__(self, queue: Queue, concurrency: int = 1) -> None:
+    def __init__(
+        self,
+        queue: Queue,
+        concurrency: int = 1,
+        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    ) -> None:
         self.queue: Queue = queue
         self._backend: Backend = queue.backend
         self._serializer: Serializer = queue.serializer
@@ -25,10 +33,11 @@ class Worker:
         self.workers: list[asyncio.Task[None]] = []
         self._running = False
         self._entered = False
+        self._heartbeat_interval = heartbeat_interval
+        self._upkeep: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
-        """Whether the pool is currently serving jobs (read-only)."""
         return self._running
 
     async def __aenter__(self) -> Worker:
@@ -43,6 +52,7 @@ class Worker:
         for _ in range(self.concurrency):
             worker = asyncio.create_task(self._worker_loop())
             self.workers.append(worker)
+        self._upkeep = asyncio.create_task(self._upkeep_loop())
         logger.info("worker pool started (concurrency=%d)", self.concurrency)
 
         return self
@@ -56,6 +66,7 @@ class Worker:
             worker.cancel()
 
         await asyncio.gather(*self.workers, return_exceptions=True)
+        await self._stop_upkeep()
         logger.info("worker pool stopped")
 
     async def _worker_loop(self) -> None:
@@ -65,7 +76,14 @@ class Worker:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("failed to claim a job from the backend; continuing")
+                logger.exception(
+                    "failed to claim a job from the backend; retrying in %ss",
+                    _CLAIM_ERROR_BACKOFF_SECONDS,
+                )
+                await asyncio.sleep(_CLAIM_ERROR_BACKOFF_SECONDS)
+                continue
+
+            if record is None:
                 continue
 
             try:
@@ -137,3 +155,52 @@ class Worker:
     async def _save(self, job: Job) -> None:
         # Terminal write: persist outcome and wake result() waiters.
         await self._backend.save(job.id, job.to_record(self._serializer), done=True)
+
+    async def drain(self, timeout: float | None = None) -> bool:
+        """Stop claiming new jobs and wait for in-flight ones to finish.
+
+        Returns True if the pool wound down with nothing left running, False if
+        the deadline passed and in-flight jobs were cancelled for redelivery.
+        """
+        self._running = False
+        if not self.workers:
+            return True
+
+        _, pending = await asyncio.wait(self.workers, timeout=timeout)
+        if pending:
+            logger.warning(
+                "drain timed out after %ss; cancelling %d in-flight job(s)",
+                timeout,
+                len(pending),
+            )
+            for worker in pending:
+                worker.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            return False
+
+        logger.info("worker pool drained")
+        return True
+
+    async def _upkeep_loop(self) -> None:
+        """Publish this process's liveness and reclaim leases of dead ones.
+
+        Runs for the pool's whole lifetime, including throughout a drain: a
+        draining worker still holds leases, so it must keep beating or a peer
+        will reclaim jobs that are still running here.
+        """
+        while True:
+            try:
+                await self._backend.heartbeat()
+                await self._backend.reap()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("worker upkeep failed; continuing")
+            await asyncio.sleep(self._heartbeat_interval)
+
+    async def _stop_upkeep(self) -> None:
+        upkeep, self._upkeep = self._upkeep, None
+        if upkeep is None:
+            return
+        upkeep.cancel()
+        await asyncio.gather(upkeep, return_exceptions=True)
