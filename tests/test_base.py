@@ -64,6 +64,19 @@ async def redis_url() -> AsyncIterator[str]:
             f"Redis {version} at {REDIS_URL} is too old: the backend needs 6.2+ "
             "for BLMOVE and ZRANGE ... BYSCORE"
         )
+    # A worker left running by an earlier aborted run keeps BLMOVE-ing against
+    # this database and claims every job the instant it is enqueued, so these
+    # tests would see an empty queue and blame the child they just spawned.
+    # Checked before the flush: anything here beat since the last teardown.
+    strays = await client.zrange(WORKERS, 0, -1)
+    if strays:  # pragma: no cover - depends on the environment
+        pytest.fail(
+            f"{len(strays)} worker process(es) are already running against "
+            f"{REDIS_URL} and will steal these tests' jobs: "
+            f"{[s.decode() for s in strays]}. Kill leftover python processes "
+            "and re-run."
+        )
+
     await client.flushdb()
     try:
         yield REDIS_URL
