@@ -19,6 +19,7 @@ in a terminal state, never left RUNNING.
 """
 
 import asyncio
+import contextlib
 from typing import TYPE_CHECKING
 
 import pytest
@@ -252,6 +253,54 @@ async def test_cancel_siblings_cancels_inflight_on_first_failure(
         assert h1 is not None and h2 is not None
         assert await h1.status() == JobStatus.CANCELLED
         assert await h2.status() == JobStatus.CANCELLED
+
+
+async def test_a_failure_cancels_siblings_before_the_body_finishes(
+    queue: Queue,
+) -> None:
+    """Fail-fast must not wait for the body to reach the join.
+
+    'asyncio.TaskGroup' cancels the remaining children the moment one raises,
+    even while the body is still running. A scope that only starts watching in
+    '__aexit__' lets its siblings burn worker time for as long as the body
+    takes -- and not paying for work that is already doomed is the whole point
+    of fail-fast.
+    """
+    cancelled_in_body = asyncio.Event()
+    forever = asyncio.Event()  # never set: the sibling only ends via cancellation
+
+    @queue.task
+    async def boom() -> int:
+        raise ValueError("trigger")
+
+    @queue.task
+    async def sibling() -> int:
+        try:
+            await forever.wait()
+        except asyncio.CancelledError:
+            cancelled_in_body.set()
+            raise
+        return 1
+
+    stopped_while_body_ran = False
+    async with queue.worker(concurrency=4):
+        with pytest.raises(BaseExceptionGroup):
+            async with queue.group() as g:
+                await g.spawn(sibling)
+                await g.spawn(boom)
+
+                # Still inside the body. Swallow the timeout rather than
+                # raising here: a regression would otherwise surface as a body
+                # exception, which the 'raises' guard above would absorb and
+                # the test would pass for the wrong reason.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(cancelled_in_body.wait(), 2)
+                stopped_while_body_ran = cancelled_in_body.is_set()
+
+    assert stopped_while_body_ran, (
+        "the sibling was still running when the scope body finished: "
+        "fail-fast only fires once __aexit__ starts joining"
+    )
 
 
 async def test_cancel_siblings_is_the_default_mode(queue: Queue) -> None:
