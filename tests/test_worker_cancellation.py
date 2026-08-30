@@ -51,8 +51,9 @@ async def test_cancel_running_job_reaches_cancelled(queue: Queue) -> None:
         await forever.wait()
         return 1
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await blocker.submit()
+        handle = await scope.spawn(blocker)
         await asyncio.wait_for(started.wait(), 2)  # ensure it is RUNNING
         await queue.backend.request_cancel(handle.job_id)
         await _wait_status(queue, handle.job_id, JobStatus.CANCELLED)
@@ -70,8 +71,9 @@ async def test_cancel_wakes_result_waiter(queue: Queue) -> None:
         await forever.wait()
         return 1
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await blocker.submit()
+        handle = await scope.spawn(blocker)
         await asyncio.wait_for(started.wait(), 2)
         await queue.backend.request_cancel(handle.job_id)
         with pytest.raises(JobCancelled):  # guards #5
@@ -92,13 +94,14 @@ async def test_worker_survives_after_a_cancel(queue: Queue) -> None:
     async def ok() -> int:
         return 7
 
+    scope = queue.root_group()
     async with queue.worker():
-        h_block = await blocker.submit()
+        h_block = await scope.spawn(blocker)
         await asyncio.wait_for(started.wait(), 2)
         await queue.backend.request_cancel(h_block.job_id)
         await _wait_status(queue, h_block.job_id, JobStatus.CANCELLED)
         # pool keeps serving
-        assert await asyncio.wait_for((await ok.submit()).result(), 3) == 7
+        assert await asyncio.wait_for((await scope.spawn(ok)).result(), 3) == 7
 
 
 async def test_cancelled_job_does_not_finish_its_body(queue: Queue) -> None:
@@ -114,8 +117,9 @@ async def test_cancelled_job_does_not_finish_its_body(queue: Queue) -> None:
         completed["flag"] = True  # must never run
         return 1
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await two_phase.submit()
+        handle = await scope.spawn(two_phase)
         await asyncio.wait_for(started.wait(), 2)
         await queue.backend.request_cancel(handle.job_id)
         await _wait_status(queue, handle.job_id, JobStatus.CANCELLED)
@@ -130,8 +134,9 @@ async def test_completed_job_is_not_overwritten_by_late_cancel(queue: Queue) -> 
     async def add(x: int, y: int) -> int:
         return x + y
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await add.submit(2, 3)
+        handle = await scope.spawn(add, 2, 3)
         assert await asyncio.wait_for(handle.result(), 3) == 5
         # cancel arrives after the job already completed
         await queue.backend.request_cancel(handle.job_id)
@@ -152,8 +157,9 @@ async def test_status_reports_cancelled(queue: Queue) -> None:
         await forever.wait()
         return 1
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await blocker.submit()
+        handle = await scope.spawn(blocker)
         await asyncio.wait_for(started.wait(), 2)
         await queue.backend.request_cancel(handle.job_id)
         await _wait_status(queue, handle.job_id, JobStatus.CANCELLED)
@@ -171,8 +177,9 @@ async def test_result_on_cancelled_job_raises(queue: Queue) -> None:
         await forever.wait()
         return 1
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await blocker.submit()
+        handle = await scope.spawn(blocker)
         await asyncio.wait_for(started.wait(), 2)
         await queue.backend.request_cancel(handle.job_id)
         await _wait_status(queue, handle.job_id, JobStatus.CANCELLED)
@@ -198,12 +205,13 @@ async def test_unserializable_result_fails_job_instead_of_hanging(
     async def ok() -> int:
         return 1
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await bad.submit()
+        handle = await scope.spawn(bad)
         with pytest.raises(RuntimeError):  # not a TimeoutError from a hang
             await asyncio.wait_for(handle.result(), 3)
         # and the worker must still be alive afterwards
-        assert await asyncio.wait_for((await ok.submit()).result(), 3) == 1
+        assert await asyncio.wait_for((await scope.spawn(ok)).result(), 3) == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -228,8 +236,9 @@ async def test_failing_job_does_not_leak_cancel_waiter(queue: Queue) -> None:
     async def boom() -> int:
         raise ValueError("nope")
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=1):
-        handle = await boom.submit()
+        handle = await scope.spawn(boom)
         with pytest.raises(RuntimeError):
             await asyncio.wait_for(handle.result(), 3)
         await asyncio.sleep(0.05)  # let any cleanup run

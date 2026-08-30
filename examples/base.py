@@ -6,7 +6,7 @@ import logging
 
 from TaskQueue import MemoryBackend, Queue
 
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.DEBUG)
 tq_logger = logging.getLogger("TaskQueue")
 tq_logger.setLevel(logging.DEBUG)
 tq_logger.addHandler(logging.StreamHandler())

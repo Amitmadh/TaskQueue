@@ -29,8 +29,12 @@ class Task[**P, R]:
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         return await self.func(*args, **kwargs)
 
-    async def submit(self, *args: P.args, **kwargs: P.kwargs) -> JobHandle[R]:
-        job = Job(task_name=self.name, args=args, kwargs=kwargs)
+    async def submit(
+        self, group_id: str | None, /, *args: P.args, **kwargs: P.kwargs
+    ) -> JobHandle[R]:
+        job = Job(task_name=self.name, args=args, kwargs=kwargs, group_id=group_id)
         await self._backend.enqueue(job.id, job.to_record(self._serializer))
-        logger.debug("submitted job %s (task=%s)", job.id, self.name)
+        logger.debug(
+            "submitted job %s (task=%s, group=%s)", job.id, self.name, group_id
+        )
         return JobHandle[R](job.id, self._backend, self._serializer)

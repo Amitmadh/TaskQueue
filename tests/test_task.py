@@ -1,9 +1,13 @@
 """Task: __call__ delegation and submit() job construction.
 
-submit() builds a Job, enqueues its record on the backend, and returns a typed
-JobHandle. The enqueued record is inspected by reconstructing the Job via
-Job.from_record(record, queue.serializer).
+submit(group_id, /, *args, **kwargs) builds a Job, enqueues its record on the
+backend, and returns a typed JobHandle. It is reached through
+JobGroup.spawn -- there is no group-less enqueue -- so these tests drive it the
+way callers do, via a scope. The enqueued record is inspected by
+reconstructing the Job via Job.from_record(record, queue.serializer).
 """
+
+import asyncio
 
 import pytest
 
@@ -37,7 +41,8 @@ async def test_submit_returns_handle_with_job_id(queue: Queue) -> None:
     async def add(x: int, y: int) -> int:
         return x + y
 
-    handle = await add.submit(2, 3)
+    scope = queue.root_group()
+    handle = await scope.spawn(add, 2, 3)
     assert isinstance(handle, JobHandle)
     assert isinstance(handle.job_id, str) and handle.job_id
 
@@ -47,7 +52,8 @@ async def test_submit_builds_job_from_call(queue: Queue) -> None:
     async def add(x: int, y: int) -> int:
         return x + y
 
-    handle = await add.submit(2, 3)
+    scope = queue.root_group()
+    handle = await scope.spawn(add, 2, 3)
     job = Job.from_record(await queue.backend.get_job(handle.job_id), queue.serializer)
     assert job.task_name == add.name
     assert job.args == (2, 3)
@@ -60,7 +66,8 @@ async def test_submit_captures_kwargs(queue: Queue) -> None:
     async def greet(name: str, *, loud: bool = False) -> str:
         return name
 
-    handle = await greet.submit("amit", loud=True)
+    scope = queue.root_group()
+    handle = await scope.spawn(greet, "amit", loud=True)
     job = Job.from_record(await queue.backend.get_job(handle.job_id), queue.serializer)
     assert job.args == ("amit",)
     assert job.kwargs == {"loud": True}
@@ -71,6 +78,26 @@ async def test_each_submit_is_a_distinct_job(queue: Queue) -> None:
     async def add(x: int, y: int) -> int:
         return x + y
 
-    h1 = await add.submit(1, 1)
-    h2 = await add.submit(2, 2)
+    scope = queue.root_group()
+    h1 = await scope.spawn(add, 1, 1)
+    h2 = await scope.spawn(add, 2, 2)
     assert h1.job_id != h2.job_id
+
+
+async def test_a_task_may_have_its_own_group_id_parameter(queue: Queue) -> None:
+    """'group_id' on submit() is positional-only, and must stay that way.
+
+    Drop the '/' and this task's own 'group_id' argument collides with the
+    scope id spawn passes positionally: TypeError, got multiple values for
+    argument 'group_id'. Positional-only is what keeps the plumbing parameter
+    out of the namespace the task owns.
+    """
+
+    @queue.task
+    async def audit(group_id: str, note: str) -> str:
+        return f"{group_id}:{note}"
+
+    async with queue.worker():
+        scope = queue.root_group()
+        handle = await scope.spawn(audit, group_id="acct-7", note="hi")
+        assert await asyncio.wait_for(handle.result(), 3) == "acct-7:hi"

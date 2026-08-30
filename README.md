@@ -5,7 +5,7 @@
 [![Typed](https://img.shields.io/badge/typed-strict-success.svg)](https://peps.python.org/pep-0561/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**A Python task queue built around structured concurrency and end-to-end type safety.** Jobs have parent-child relationships, failures cancel siblings instead of orphaning them, and the type checker catches signature mismatches at `.submit()` call sites. Redis for production and an in-memory backend for tests and single-process use, behind the same API; SQLite is planned.
+**A Python task queue built around structured concurrency and end-to-end type safety.** Jobs have parent-child relationships, failures cancel siblings instead of orphaning them, and the type checker catches signature mismatches at `spawn()` call sites. Redis for production and an in-memory backend for tests and single-process use, behind the same API; SQLite is planned.
 
 > **Status:** pre-alpha, in active development. The API is still moving — see the roadmap below.
 
@@ -15,7 +15,7 @@
 
 **Structured concurrency, distributed.** Built on the same idea as `asyncio.TaskGroup` and Trio's nurseries, extended across processes. Jobs are spawned into a *scope* (`JobGroup`). The scope's `async with` block doesn't exit until every child reaches a terminal state. If one child fails, its siblings are cancelled and the failure propagates up the scope tree. If a *worker* process dies, a heartbeat-based reaper returns its in-flight jobs to the queue so nothing is stranded. Applying the same mechanism to a dead *scope owner* — cancelling its children rather than reclaiming its leases — is Phase 4.
 
-**End-to-end type safety.** `@q.task` preserves the wrapped function's signature via `ParamSpec`, so `add.submit(2, 3)` is type-checked against `add`'s signature and `await handle.result()` is correctly typed as `int`. The whole codebase runs under Pyright in strict mode.
+**End-to-end type safety.** `@q.task` preserves the wrapped function's signature via `ParamSpec`, so `g.spawn(add, 2, 3)` is type-checked against `add`'s signature and `await handle.result()` is correctly typed as `int`. The whole codebase runs under Pyright in strict mode.
 
 **Pluggable backends behind a `Protocol`.** The `Backend` interface is a `typing.Protocol`, not an ABC, so a different store (Redis, SQLite, Postgres) can be slotted in without inheriting from anything. Two are built: `MemoryBackend` for tests and single-process use, and `RedisBackend` for real deployments — `BLMOVE` into a per-worker processing list for reliable delivery, pub/sub for result and cancellation notification, Lua for every check-then-act guard. Both are held to the same conformance suite, which runs twice: once against each. SQLite comes after v1.0.
 
@@ -61,10 +61,11 @@ asyncio.run(main())
 The queue boundary keeps your types intact, too — `@q.task` preserves the signature via `ParamSpec`:
 
 ```python
-handle = await work.submit(3)       # JobHandle[int]
-total: int = await handle.result()  # typed as int
+async with q.group() as g:
+    handle = await g.spawn(work, 3)     # JobHandle[int]
+    total: int = await handle.result()  # typed as int
 
-await work.submit("three")          # Pyright: Argument of type "str" cannot be assigned to "int"
+    await g.spawn(work, "three")        # Pyright: Argument of type "str" cannot be assigned to "int"
 ```
 
 When fail-fast isn't what you want: `group(on_error="collect")` runs every job and raises a `BaseExceptionGroup` of all failures, and `group(deadline=5.0)` cancels the whole scope if it outruns its deadline.
@@ -117,7 +118,7 @@ ships.
 | Feature                            | Celery    | RQ        | Dramatiq  | Arq | TaskQueue           |
 | -----------------------------------| --------- | --------- | --------- | --- | ------------------- |
 | Async-native worker                | ✗ ¹       | ✗         | partial ² | ✓   | ✓                   |
-| Type-safe `.submit()` (ParamSpec)  | ✗         | ✗         | ✗         | ✗   | ✓                   |
+| Type-safe enqueue (ParamSpec)      | ✗         | ✗         | ✗         | ✗   | ✓                   |
 | Structured concurrency / scopes    | ✗         | ✗         | ✗         | ✗   | ✓                   |
 | Cross-process cancellation         | partial ³ | partial ⁴ | ✗         | ✓   | planned (Phase 4)   |
 | SQLite backend                     | partial ⁵ | ✗         | ✗         | ✗   | planned (post-v1.0) |
@@ -135,7 +136,7 @@ If you're putting something in production today, use Celery. This project's valu
 
 ## Design Choices
 
-**No orphaned jobs.** Every job has a parent scope. The only way to "fire and forget" is to spawn into the explicit `root_group()`, which makes the choice visible in the code. This isn't a restriction — it's the property that makes everything else (reliable cancellation, error propagation, observability) tractable.
+**No orphaned jobs.** Every job has a parent scope — enforced by the API, not by convention: enqueueing takes a scope id, so `spawn` is the only way in. The only way to "fire and forget" is to spawn into the explicit `root_group()`, which makes the choice visible in the code. This isn't a restriction — it's the property that makes everything else (reliable cancellation, error propagation, observability) tractable.
 
 **Errors have somewhere to go.** Failures are exceptions, raised from the `async with` block of the owning scope. You never have to grep logs to find out a background job died.
 
@@ -171,7 +172,7 @@ See the [changelog](CHANGELOG.md) for what's actually done.
 A quick tour of the pieces, in roughly the order they execute:
 
 - `Queue` is the user-facing facade. Holds the backend, the task registry, and creates scopes.
-- `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.submit()` for enqueueing.
+- `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.submit(group_id, ...)`, which `JobGroup.spawn` calls to enqueue.
 - `Job` is the serialized unit of work that crosses the wire (id, task name, args, scope id, status).
 - `JobGroup` is the structured-concurrency scope. Its `__aexit__` blocks until all children finish or are cancelled.
 - `Backend` is the `Protocol` for persistence. Built: `MemoryBackend` and `RedisBackend`; SQLite comes after v1.0.

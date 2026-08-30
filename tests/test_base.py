@@ -98,8 +98,9 @@ async def test_fan_out_and_gather() -> None:
         await asyncio.sleep(0.01)
         return n * 10
 
+    scope = q.root_group()
     async with q.worker(concurrency=8):
-        handles = [await fetch.submit(i) for i in range(20)]
+        handles = [await scope.spawn(fetch, i) for i in range(20)]
         results = await asyncio.wait_for(
             asyncio.gather(*(h.result() for h in handles)), 10
         )
@@ -116,8 +117,9 @@ async def test_mixed_success_and_failure_batch() -> None:
             return n
         raise ValueError(f"odd: {n}")
 
+    scope = q.root_group()
     async with q.worker(concurrency=4):
-        handles = [await maybe.submit(i) for i in range(6)]
+        handles = [await scope.spawn(maybe, i) for i in range(6)]
         settled = await asyncio.wait_for(
             asyncio.gather(*(h.result() for h in handles), return_exceptions=True), 10
         )
@@ -145,10 +147,11 @@ async def test_chained_pipeline() -> None:
     async def load(nums: list[int]) -> int:
         return sum(nums)
 
+    scope = q.root_group()
     async with q.worker(concurrency=2):
-        raw = await (await extract.submit("db")).result()
-        shaped = await (await transform.submit(raw)).result()
-        total = await (await load.submit(shaped)).result()
+        raw = await (await scope.spawn(extract, "db")).result()
+        shaped = await (await scope.spawn(transform, raw)).result()
+        total = await (await scope.spawn(load, shaped)).result()
 
     assert total == 14  # 1 + 4 + 9
 
@@ -162,10 +165,11 @@ async def test_streaming_producer_consumer() -> None:
         return n
 
     collected: list[int] = []
+    scope = q.root_group()
     async with q.worker(concurrency=3):
         handles: list[JobHandle[int]] = []
         for i in range(15):
-            handles.append(await work.submit(i))
+            handles.append(await scope.spawn(work, i))
             await asyncio.sleep(0.001)  # stagger submissions like a live stream
         for h in handles:
             collected.append(await asyncio.wait_for(h.result(), 5))
@@ -196,8 +200,9 @@ async def test_status_observable_end_to_end() -> None:
         await asyncio.sleep(0.05)
         return "done"
 
+    scope = q.root_group()
     async with q.worker():
-        handle = await slow.submit()
+        handle = await scope.spawn(slow)
         assert await handle.status() in (JobStatus.QUEUED, JobStatus.RUNNING)
         assert await asyncio.wait_for(handle.result(), 5) == "done"
         assert await handle.status() == JobStatus.COMPLETED
@@ -261,8 +266,9 @@ async def test_concurrency_is_bounded_and_reached() -> None:
         state["current"] -= 1
         return 1
 
+    scope = q.root_group()
     async with q.worker(concurrency=4):
-        handles = [await work.submit() for _ in range(16)]
+        handles = [await scope.spawn(work) for _ in range(16)]
         results = await asyncio.wait_for(
             asyncio.gather(*(h.result() for h in handles)), 10
         )
@@ -280,8 +286,9 @@ async def test_every_job_runs_exactly_once_under_load() -> None:
         runs[n] += 1
         return n
 
+    scope = q.root_group()
     async with q.worker(concurrency=8):
-        handles = [await mark.submit(i) for i in range(100)]
+        handles = [await scope.spawn(mark, i) for i in range(100)]
         results = await asyncio.wait_for(
             asyncio.gather(*(h.result() for h in handles)), 10
         )
@@ -307,8 +314,9 @@ _CONCURRENCY_PROGRAM = textwrap.dedent(
         return n * n
 
     async def main() -> None:
+        scope = q.root_group()
         async with q.worker(concurrency=4):
-            handles = [await work.submit(i) for i in range(40)]
+            handles = [await scope.spawn(work, i) for i in range(40)]
             results = [await h.result() for h in handles]
         assert results == [i * i for i in range(40)], results
         assert peak["max"] == 4, peak["max"]
@@ -399,7 +407,8 @@ async def test_two_worker_processes_split_jobs(redis_url: str) -> None:
         for worker in workers:
             _read_until(worker, "BASE_READY")
 
-        handles = [await work.submit(n) for n in range(jobs)]
+        scope = q.root_group()
+        handles = [await scope.spawn(work, n) for n in range(jobs)]
         ran_by = [await asyncio.wait_for(handle.result(), 45) for handle in handles]
 
         assert len(ran_by) == jobs
@@ -532,7 +541,8 @@ async def test_job_reclaimed_after_worker_crash(redis_url: str) -> None:
     async def work(n: int) -> int:  # pragma: no cover - runs in the children
         return n * 2
 
-    handle = await work.submit(21)
+    scope = q.root_group()
+    handle = await scope.spawn(work, 21)
 
     victim = _spawn_worker(_CRASH_WORKER, "600")
     try:
@@ -549,6 +559,9 @@ async def test_job_reclaimed_after_worker_crash(redis_url: str) -> None:
             handle.job_id.encode()
         ]
         assert (await client.hget(job_key(handle.job_id), "status")) == b"running"
+        # The delivery to the victim was counted when it claimed, so it survives
+        # the process that is about to be reaped.
+        assert (await client.hget(job_key(handle.job_id), "attempts")) == b"1"
         assert await client.zscore(WORKERS, dead_id) is not None
     finally:
         if victim.poll() is None:  # pragma: no cover - only if kill failed

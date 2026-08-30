@@ -19,11 +19,15 @@ in a terminal state, never left RUNNING.
 """
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import pytest
 
 from TaskQueue.job import JobStatus
 from TaskQueue.queue import Queue
+
+if TYPE_CHECKING:
+    from TaskQueue.handle import JobHandle
 
 pytestmark = pytest.mark.timeout(6)
 
@@ -45,6 +49,81 @@ async def test_spawn_returns_a_working_handle(queue: Queue) -> None:
         async with queue.group() as g:
             handle = await g.spawn(add, 2, 3)
         assert await asyncio.wait_for(handle.result(), 3) == 5
+
+
+async def test_spawned_job_carries_the_group_id(queue: Queue) -> None:
+    # The scope id on the job record is what lets a process other than the
+    # owner find a dead scope's children.
+    @queue.task
+    async def noop() -> None:
+        return None
+
+    async with queue.group() as g:
+        handle = await g.spawn(noop)
+        record = await queue.backend.get_job(handle.job_id)
+        assert record["group_id"] == g.id
+        async with queue.worker():
+            await asyncio.wait_for(handle.result(), 3)
+
+
+async def test_a_detached_root_group_stamps_no_group_id(queue: Queue) -> None:
+    """A scope that was never entered supervises nothing.
+
+    'q.root_group().spawn(...)' without 'async with' is the one sanctioned
+    detachment, so its jobs must carry no group id -- that absence is what
+    keeps a reaper from cancelling them, and it is what lets a producer
+    enqueue a batch and exit without its own work being torn down behind it.
+    """
+
+    @queue.task
+    async def noop() -> None:
+        return None
+
+    handle = await queue.root_group().spawn(noop)  # deliberately not entered
+    record = await queue.backend.get_job(handle.job_id)
+    assert "group_id" not in record
+
+
+async def test_owner_cancelled_while_joining_cancels_children(queue: Queue) -> None:
+    """Cancelling the task that owns a scope must not orphan its children.
+
+    __aexit__ spends nearly all of a scope's life parked in the join, so that
+    -- not the body -- is where a Ctrl-C on the owning task lands. Without the
+    CancelledError arm the children keep running with nobody waiting, and no
+    reaper can save them: the process is alive and still heartbeating.
+    """
+    forever = asyncio.Event()
+
+    @queue.task
+    async def blocker() -> int:
+        await forever.wait()
+        return 1
+
+    handles: list[JobHandle[int]] = []
+
+    async def owner() -> None:
+        async with queue.group() as g:
+            for _ in range(3):
+                handles.append(await g.spawn(blocker))
+
+    async def all_running() -> bool:
+        if len(handles) < 3:
+            return False
+        for handle in handles:
+            if await handle.status() is not JobStatus.RUNNING:
+                return False
+        return True
+
+    async with queue.worker(concurrency=3):
+        task = asyncio.create_task(owner())
+        while not await all_running():
+            await asyncio.sleep(0.01)
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        for handle in handles:
+            assert await handle.status() is JobStatus.CANCELLED
 
 
 # --------------------------------------------------------------------------- #

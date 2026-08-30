@@ -31,9 +31,9 @@ class MemoryBackend(Backend):
         except TimeoutError:
             return None
         record = self._jobs[job_id]
-        # The RUNNING transition is a single-field write — no deserialize.
         record["status"] = JobStatus.RUNNING.value
-        logger.debug("claimed job %s", job_id)
+        record["attempts"] = str(int(record.get("attempts", 0)) + 1)
+        logger.debug("claimed job %s (attempt %s)", job_id, record["attempts"])
         return dict(record)
 
     async def get_job(self, job_id: str) -> dict[str, Any]:

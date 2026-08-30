@@ -64,6 +64,7 @@ if redis.call('EXISTS', job) == 0 then
 end
 
 redis.call('HSET', job, 'status', running)
+redis.call('HINCRBY', job, 'attempts', 1)
 
 return redis.call('HGETALL', job)
 """
@@ -164,7 +165,6 @@ for _, worker in ipairs(expired) do
         if redis.call('EXISTS', job) == 1 then
             if redis.call('HGET', job, 'status') == running then
                 redis.call('HSET', job, 'status', queued)
-                redis.call('HINCRBY', job, 'attempts', 1)
             end
             redis.call('RPUSH', queue, job_id)
             reclaimed = reclaimed + 1
@@ -214,12 +214,7 @@ class RedisBackend(Backend):
 
     @property
     def worker_ttl(self) -> int:
-        """Seconds without a heartbeat after which a worker is presumed dead.
-
-        Must be comfortably larger than the pool's heartbeat interval — three
-        missed beats is the usual margin — or a live worker that pauses for a
-        garbage collection or a network blip has its leases reclaimed under it.
-        """
+        """Seconds without a heartbeat after which a worker is presumed dead."""
         return self._worker_ttl
 
     def _decode(self, raw: dict[bytes | str, bytes | str]) -> dict[str, str | bytes]:
@@ -261,8 +256,9 @@ class RedisBackend(Backend):
             )
             return None
 
-        logger.debug("claimed job %s", job_id)
-        return self._decode(dict(zip(flat[::2], flat[1::2], strict=True)))
+        record = self._decode(dict(zip(flat[::2], flat[1::2], strict=True)))
+        logger.debug("claimed job %s (attempt %s)", job_id, record.get("attempts"))
+        return record
 
     async def get_job(self, job_id: str) -> dict[str, str | bytes]:
         raw_record = await self.redis.hgetall(job_key(job_id))

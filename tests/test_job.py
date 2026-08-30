@@ -105,6 +105,14 @@ class TestJobToRecord:
             "request_cancel",
         }
 
+    def test_group_id_absent_when_the_job_belongs_to_no_group(self) -> None:
+        # Same rule as error/result: an optional key is absent, never a
+        # sentinel. A placeholder string would be a valid-looking group id.
+        assert "group_id" not in Job(task_name="a").to_record(SER)
+
+    def test_group_id_written_as_a_plain_string_when_set(self) -> None:
+        assert Job(task_name="a", group_id="g1").to_record(SER)["group_id"] == "g1"
+
     def test_envelope_fields_stay_plain(self) -> None:
         d = Job(task_name="a", attempts=2).to_record(SER)
         assert d["task_name"] == "a"
@@ -151,6 +159,19 @@ class TestJobToRecord:
         assert back.result == 42
         assert back.attempts == 1
         assert back.status is JobStatus.COMPLETED
+
+    def test_group_id_round_trips(self) -> None:
+        j = Job(task_name="a", group_id="g1")
+        assert Job.from_record(j.to_record(SER), SER).group_id == "g1"
+
+    def test_record_without_group_id_reads_as_none(self) -> None:
+        # Schema drift: a job enqueued before this field existed must still
+        # load. Indexing the key instead would raise KeyError inside the
+        # worker, which swallows it as a poison record -- the job never
+        # reaches a terminal state and its result() waiter hangs forever.
+        record = Job(task_name="a").to_record(SER)
+        assert "group_id" not in record
+        assert Job.from_record(record, SER).group_id is None
 
 
 class TestJobEquality:

@@ -36,8 +36,10 @@ class JobGroup:
         self._on_error: OnError = OnError(on_error)
         self._deadline: float | None = deadline
         self._deadline_at: float | None = None
+        self._entered: bool = False
 
     async def __aenter__(self) -> JobGroup:
+        self._entered = True
         if self._deadline is not None:
             self._deadline_at = asyncio.get_running_loop().time() + self._deadline
         return self
@@ -70,6 +72,10 @@ class JobGroup:
             )
             await self.cancel_all_jobs(self._handles.values())
             raise
+        except asyncio.CancelledError:
+            logger.debug("group %s: cancelled; cancelling all children", self.id)
+            await self.cancel_all_jobs(self._handles.values())
+            raise
 
         if failures:
             logger.debug(
@@ -94,7 +100,7 @@ class JobGroup:
     async def spawn[**P, R](
         self, task: Task[P, R], *args: P.args, **kwargs: P.kwargs
     ) -> JobHandle[R]:
-        handle = await task.submit(*args, **kwargs)
+        handle = await task.submit(self.id if self._entered else None, *args, **kwargs)
         self._handles[handle.job_id] = handle
         logger.debug("group %s: spawned job %s", self.id, handle.job_id)
         return handle

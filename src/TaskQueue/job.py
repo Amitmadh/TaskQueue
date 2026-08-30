@@ -26,6 +26,7 @@ class Job:
         result: Any = None,
         error: str | None = None,
         attempts: int = 0,
+        group_id: str | None = None,
     ) -> None:
         self.id = str(id or uuid4().hex)
         self.task_name = task_name
@@ -37,6 +38,7 @@ class Job:
         self.error: str | None = error
         self.attempts = attempts
         self.request_cancel = False
+        self.group_id: str | None = group_id
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Job):
@@ -67,6 +69,8 @@ class Job:
                 {"args": list(self.args), "kwargs": self.kwargs}
             ),
         }
+        if self.group_id is not None:
+            record["group_id"] = self.group_id
         if self.error is not None:
             record["error"] = self.error
         if self.status is JobStatus.COMPLETED:
@@ -89,4 +93,5 @@ class Job:
         job.kwargs = dict(payload["kwargs"]) if payload is not None else {}
         job.request_cancel = bool(int(record.get("request_cancel", 0)))
         job.attempts = int(record.get("attempts", 0))
+        job.group_id = record.get("group_id")
         return job

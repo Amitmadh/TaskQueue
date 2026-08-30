@@ -341,6 +341,30 @@ async def test_claim_returns_a_detached_copy(
     assert (await redis_backend.get_job(job.id))["task_name"] == job.task_name
 
 
+async def test_claim_counts_the_delivery(
+    redis_backend: RedisBackend, serializer: Serializer
+) -> None:
+    job = await _enqueue(redis_backend, serializer)
+    assert (await redis_backend.get_job(job.id))["attempts"] == "0"
+
+    claimed = await redis_backend.claim()
+    assert claimed is not None
+    assert claimed["attempts"] == "1"  # visible to the worker that claimed it
+    assert (await redis_backend.get_job(job.id))["attempts"] == "1"  # and persisted
+
+
+async def test_a_redelivered_job_counts_each_delivery(
+    redis_backend: RedisBackend, serializer: Serializer
+) -> None:
+    job = await _enqueue(redis_backend, serializer)
+    await redis_backend.claim()
+    await redis_backend.release(job.id)
+
+    redelivered = await redis_backend.claim()
+    assert redelivered is not None
+    assert redelivered["attempts"] == "2"
+
+
 # --------------------------------------------------------------------------
 # save
 # --------------------------------------------------------------------------
@@ -859,7 +883,7 @@ async def test_reap_reclaims_a_dead_workers_jobs(
     assert await redis_backend.redis.zscore(WORKERS, "ghost") is None
 
 
-async def test_reap_resets_status_and_counts_the_attempt(
+async def test_reap_resets_status_and_leaves_counting_to_the_redelivery(
     redis_backend: RedisBackend, serializer: Serializer
 ) -> None:
     job = await _strand(redis_backend, serializer, "ghost")
@@ -869,7 +893,11 @@ async def test_reap_resets_status_and_counts_the_attempt(
 
     record = await redis_backend.get_job(job.id)
     assert JobStatus(record["status"]) is JobStatus.QUEUED
-    assert record["attempts"] == "1"
+    assert record["attempts"] == "0"  # the reap itself is not an attempt
+
+    claimed = await redis_backend.claim()
+    assert claimed is not None
+    assert claimed["attempts"] == "1"  # the redelivery is
 
 
 async def test_reap_leaves_a_live_worker_alone(
@@ -932,3 +960,25 @@ async def test_concurrent_reaps_requeue_each_job_once(serializer: Serializer) ->
 def test_non_positive_worker_ttl_is_rejected(ttl: int) -> None:
     with pytest.raises(ValueError, match="worker_ttl"):
         RedisBackend(fakeredis.FakeAsyncRedis(), worker_ttl=ttl)
+
+
+async def test_a_lease_stranded_before_the_status_write_is_still_counted(
+    redis_backend: RedisBackend, serializer: Serializer
+) -> None:
+    """'claim' leases in two steps: BLMOVE, then the script that marks RUNNING.
+
+    A worker killed between them leaves the job on its processing list while the
+    record still says QUEUED. That half-delivery must not let the eventual real
+    delivery go uncounted.
+    """
+    job = await _enqueue(redis_backend, serializer)
+    await redis_backend.redis.lmove(QUEUE, processing_key("ghost"))
+    half_delivered = await redis_backend.get_job(job.id)
+    assert JobStatus(half_delivered["status"]) is JobStatus.QUEUED
+    await _kill(redis_backend, "ghost")
+
+    assert await redis_backend.reap() == 1
+
+    claimed = await redis_backend.claim()
+    assert claimed is not None and claimed["id"] == job.id
+    assert claimed["attempts"] == "1"

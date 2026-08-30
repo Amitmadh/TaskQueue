@@ -330,7 +330,8 @@ _SLOW_JOB_QUEUE = """
         print("JOB FINISHED", flush=True)
         return "ok"
 
-    asyncio.run(slow.submit())
+    scope = q.root_group()
+    asyncio.run(scope.spawn(slow))
 """
 
 

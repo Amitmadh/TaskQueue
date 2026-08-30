@@ -15,8 +15,9 @@ async def test_single_job_round_trip(queue: Queue) -> None:
     async def add(x: int, y: int) -> int:
         return x + y
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await add.submit(2, 3)
+        handle = await scope.spawn(add, 2, 3)
         assert await asyncio.wait_for(handle.result(), 3) == 5
         assert await handle.status() == JobStatus.COMPLETED
 
@@ -26,8 +27,9 @@ async def test_many_jobs_complete(queue: Queue) -> None:
     async def square(n: int) -> int:
         return n * n
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=4):
-        handles = [await square.submit(i) for i in range(10)]
+        handles = [await scope.spawn(square, i) for i in range(10)]
         results = [await asyncio.wait_for(h.result(), 3) for h in handles]
     assert results == [i * i for i in range(10)]
 
@@ -38,9 +40,10 @@ async def test_concurrency_runs_jobs_in_parallel(queue: Queue) -> None:
         await asyncio.sleep(0.2)
         return 1
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=5):
         start = asyncio.get_running_loop().time()
-        handles = [await slow.submit() for _ in range(5)]
+        handles = [await scope.spawn(slow) for _ in range(5)]
         for h in handles:
             await asyncio.wait_for(h.result(), 3)
         elapsed = asyncio.get_running_loop().time() - start
@@ -56,12 +59,13 @@ async def test_failing_task_raises_and_worker_survives(queue: Queue) -> None:
     async def ok() -> int:
         return 7
 
+    scope = queue.root_group()
     async with queue.worker():
-        h_boom = await boom.submit()
+        h_boom = await scope.spawn(boom)
         with pytest.raises(RuntimeError):
             await asyncio.wait_for(h_boom.result(), 3)
         assert await h_boom.status() == JobStatus.FAILED
-        h_ok = await ok.submit()
+        h_ok = await scope.spawn(ok)
         assert await asyncio.wait_for(h_ok.result(), 3) == 7
 
 
@@ -72,6 +76,7 @@ async def test_unknown_task_name_does_not_kill_worker(queue: Queue) -> None:
 
     backend = queue.backend
     ghost = Job(task_name="does.not.exist")
+    scope = queue.root_group()
     async with queue.worker():
         await backend.enqueue(ghost.id, ghost.to_record(queue.serializer))
 
@@ -84,7 +89,7 @@ async def test_unknown_task_name_does_not_kill_worker(queue: Queue) -> None:
 
         await asyncio.wait_for(until_failed(), 3)
         assert (await backend.get_job(ghost.id))["error"]
-        h_ok = await ok.submit()
+        h_ok = await scope.spawn(ok)
         assert await asyncio.wait_for(h_ok.result(), 3) == 1
 
 
@@ -94,9 +99,10 @@ async def test_worker_lifecycle_flags(queue: Queue) -> None:
         return x + y
 
     worker = queue.worker()
+    scope = queue.root_group()
     async with worker as entered:
         assert entered.running is True
-        h = await add.submit(1, 2)
+        h = await scope.spawn(add, 1, 2)
         await asyncio.wait_for(h.result(), 3)
     assert worker.running is False
     assert all(t.done() for t in worker.workers)
@@ -141,8 +147,9 @@ async def test_inflight_job_is_redelivered_on_shutdown(queue: Queue) -> None:
         await unblock.wait()  # stay mid-flight until released
         return 42
 
+    scope = queue.root_group()
     async with queue.worker() as w:
-        handle = await slow.submit()
+        handle = await scope.spawn(slow)
         await asyncio.wait_for(started.wait(), 2)  # ensure it is RUNNING
         assert w.running is True
     # pool exited mid-flight: the job must be redelivered (QUEUED), not stranded
@@ -168,8 +175,9 @@ async def test_drain_waits_for_an_in_flight_job(queue: Queue) -> None:
         await asyncio.sleep(0.2)
         return 7
 
+    scope = queue.root_group()
     async with queue.worker() as w:
-        handle = await slow.submit()
+        handle = await scope.spawn(slow)
         await asyncio.wait_for(started.wait(), 3)
         assert await asyncio.wait_for(w.drain(), 5) is True
         assert w.running is False
@@ -194,8 +202,9 @@ async def test_drain_timeout_cancels_and_redelivers(queue: Queue) -> None:
         await unblock.wait()
         return 1
 
+    scope = queue.root_group()
     async with queue.worker() as w:
-        handle = await wedged.submit()
+        handle = await scope.spawn(wedged)
         await asyncio.wait_for(started.wait(), 3)
         assert await asyncio.wait_for(w.drain(timeout=0.1), 5) is False
         assert all(task.done() for task in w.workers)
@@ -215,8 +224,9 @@ async def test_concurrent_drains_all_wait_for_the_pool(queue: Queue) -> None:
         await asyncio.sleep(0.2)
         return 3
 
+    scope = queue.root_group()
     async with queue.worker() as w:
-        handle = await slow.submit()
+        handle = await scope.spawn(slow)
         await asyncio.wait_for(started.wait(), 3)
         assert await asyncio.wait_for(asyncio.gather(w.drain(), w.drain()), 5) == [
             True,

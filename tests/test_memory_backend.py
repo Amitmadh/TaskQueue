@@ -45,6 +45,26 @@ async def test_claim_returns_record_and_marks_running(serializer: Serializer) ->
     assert JobStatus(claimed["status"]) is JobStatus.RUNNING
 
 
+async def test_claim_counts_the_delivery(serializer: Serializer) -> None:
+    be = MemoryBackend()
+    job = await _enqueue(be, serializer)
+    assert (await be.get_job(job.id))["attempts"] == "0"
+
+    claimed = await be.claim()
+    assert claimed["attempts"] == "1"
+    assert (await be.get_job(job.id))["attempts"] == "1"
+
+
+async def test_a_redelivered_job_counts_each_delivery(serializer: Serializer) -> None:
+    be = MemoryBackend()
+    job = await _enqueue(be, serializer)
+    await be.claim()
+    await be.release(job.id)
+
+    redelivered = await asyncio.wait_for(be.claim(), 1)
+    assert redelivered["attempts"] == "2"
+
+
 async def test_claim_waits_for_a_job_then_yields_none(serializer: Serializer) -> None:
     be = MemoryBackend()
     with pytest.raises(asyncio.TimeoutError):

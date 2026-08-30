@@ -29,8 +29,9 @@ async def test_peak_in_flight_never_exceeds_limit(queue: Queue, limit: int) -> N
         await asyncio.sleep(0.05)
         state["current"] -= 1
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=limit):
-        handles = [await track.submit() for _ in range(limit * 4)]
+        handles = [await scope.spawn(track) for _ in range(limit * 4)]
         for h in handles:
             await asyncio.wait_for(h.result(), 5)
 
@@ -47,8 +48,9 @@ async def test_concurrency_one_serializes_in_order(queue: Queue) -> None:
         await asyncio.sleep(0.01)
         return n
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=1):
-        handles = [await record.submit(i) for i in range(8)]
+        handles = [await scope.spawn(record, i) for i in range(8)]
         for h in handles:
             await asyncio.wait_for(h.result(), 5)
 
@@ -63,8 +65,9 @@ async def test_each_job_runs_exactly_once(queue: Queue) -> None:
         runs[n] += 1
         return n
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=4):
-        handles = [await mark.submit(i) for i in range(50)]
+        handles = [await scope.spawn(mark, i) for i in range(50)]
         results = [await asyncio.wait_for(h.result(), 5) for h in handles]
 
     assert sorted(results) == list(range(50))  # nothing dropped
@@ -89,8 +92,9 @@ async def test_full_parallelism_via_rendezvous(queue: Queue) -> None:
         await asyncio.wait_for(everyone_here.wait(), 3)
         return 1
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=n):
-        handles = [await rendezvous.submit() for _ in range(n)]
+        handles = [await scope.spawn(rendezvous) for _ in range(n)]
         results = [await asyncio.wait_for(h.result(), 5) for h in handles]
 
     assert results == [1] * n
@@ -102,8 +106,9 @@ async def test_many_waiters_share_one_result(queue: Queue) -> None:
         await asyncio.sleep(0.05)
         return 99
 
+    scope = queue.root_group()
     async with queue.worker():
-        handle = await slow.submit()
+        handle = await scope.spawn(slow)
         # ten coroutines await the same job concurrently; every one must wake
         results = await asyncio.wait_for(
             asyncio.gather(*(handle.result() for _ in range(10))), 5
@@ -117,8 +122,9 @@ async def test_concurrent_submitters_all_land(queue: Queue) -> None:
     async def echo(n: int) -> int:
         return n
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=4):
-        handles = await asyncio.gather(*(echo.submit(i) for i in range(30)))
+        handles = await asyncio.gather(*(scope.spawn(echo, i) for i in range(30)))
         results = await asyncio.wait_for(
             asyncio.gather(*(h.result() for h in handles)), 5
         )
@@ -133,8 +139,9 @@ async def test_throughput_under_load(queue: Queue) -> None:
     async def square(n: int) -> int:
         return n * n
 
+    scope = queue.root_group()
     async with queue.worker(concurrency=16):
-        handles = [await square.submit(i) for i in range(500)]
+        handles = [await scope.spawn(square, i) for i in range(500)]
         results = [await asyncio.wait_for(h.result(), 10) for h in handles]
 
     assert results == [i * i for i in range(500)]

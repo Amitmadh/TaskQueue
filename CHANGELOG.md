@@ -80,6 +80,11 @@ All notable changes documented here.
   and CI runs a `redis:7` service container.
 - **`.gitattributes`** (`* text=auto eol=lf`). The repository had drifted into mixed line
   endings, so an editor rewriting a file end to end was showing up as a whole-file diff.
+- **`python -m TaskQueue`** as an alternative to the `taskqueue` console script. On
+  Windows the installed script is a launcher `.exe` that runs the interpreter as its own
+  child, so a parent holding a `Popen` handle on it can only signal the stub — it cannot
+  kill, or wait on, the worker itself. `-m` makes the worker a direct child, which is
+  what `examples/worker_crash_job_reclaimed.py` needs to stage a crash at all.
 
 ### Changed
 
@@ -111,6 +116,18 @@ All notable changes documented here.
 - **The `Backend` Protocol grew to eleven methods**, adding `heartbeat()` and
   `reap()`. `MemoryBackend` implements both as no-ops: a single process cannot outlive
   its own leases, so it has no liveness protocol to run.
+- **`attempts` is counted by `claim()`, not by `reap()`,** and the protocol now says so.
+  Counting a lost lease at reclaim time cannot be exact: `claim` leases in two steps
+  (`BLMOVE`, then the script that marks the job `RUNNING`), and a worker killed between
+  them left the job on its processing list still marked `QUEUED` — a state the reaper
+  requeued without counting, so a job could be delivered twice and report `attempts=0`.
+  Incrementing inside the claim script, atomically with the `RUNNING` write, makes the
+  half-delivery uncountable rather than uncounted: nothing was handed to a worker that
+  could act on it, and the delivery that replaces it is counted normally. `attempts` now
+  means "times handed to a worker", so a job reads `1` while it first runs rather than
+  `0`. `MemoryBackend.claim` counts too — it previously never touched the field, so the
+  same job redelivered by `release()` reported a different number in each backend. This
+  matters before retries land in Phase 5, since that is the number they will branch on.
 - **A failing backend no longer spins.** The worker loop retried `claim()` with no
   backoff, so a Redis outage burned a core and flooded the log — thousands of tracebacks a
   second. It now waits a second between attempts.

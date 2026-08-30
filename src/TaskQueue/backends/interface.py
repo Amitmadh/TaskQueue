@@ -19,6 +19,9 @@ class Backend(Protocol):
 
         The record must be persisted before the job is exposed to 'claim', so a
         worker can never claim a job whose record does not yet exist.
+
+        'status' is the backend's to write, not the caller's: enqueueing is
+        what makes a job QUEUED, whatever the record arrived saying.
         """
         ...
 
@@ -30,9 +33,11 @@ class Backend(Protocol):
         blocking forever. Callers loop; an implementation must never block
         indefinitely.
 
-        Leasing transitions the job QUEUED -> RUNNING. The returned record is a
-        detached copy — mutating it must not corrupt stored state. The lease is
-        acked by a terminal 'save(done=True)' or nacked by 'release'.
+        Leasing transitions the job QUEUED -> RUNNING and increments the
+        record's 'attempts' counter in the same atomic step.
+        The returned record is a detached copy — mutating it must not corrupt
+        stored state. The lease is acked by a terminal 'save(done=True)' or
+        nacked by 'release'.
         """
         ...
 
@@ -120,5 +125,8 @@ class Backend(Protocol):
         first caller takes the work and the rest find nothing left to do. A
         no-op for single-process backends, which cannot outlive their own
         leases.
+
+        Requeuing does not touch 'attempts' — see 'claim', which counts each
+        delivery as it happens.
         """
         ...
