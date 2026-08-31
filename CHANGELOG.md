@@ -4,8 +4,8 @@ All notable changes documented here.
 
 ## [0.4.0] - 2026-08-30
 
-Phase 4. Cancellation that reliably crosses processes — and the deliberate decision
-**not** to build the other half the roadmap promised. See Cut.
+Phase 4. Cancellation that reliably crosses processes: delivered through the backend,
+with a poll backup so a dropped notification costs latency rather than correctness.
 
 ### Added
 
@@ -79,8 +79,8 @@ Phase 4. Cancellation that reliably crosses processes — and the deliberate dec
   registering before it claims (see Fixed). It previously started, logged
   `worker upkeep failed; continuing`, and retried in the background.
 - **README:** "Cross-process cancellation" is ✓ in the comparison table, and there is a
-  new *What survives a crash, and what doesn't* section — the honest boundary now that
-  supervision is cut.
+  new *What survives a crash, and what doesn't* section — the boundary between what a
+  scope guarantees and what a killed process takes with it.
 
 ### Fixed
 
@@ -95,8 +95,8 @@ Phase 4. Cancellation that reliably crosses processes — and the deliberate dec
   a body that raised and a deadline that passed, but a cancellation arriving while
   parked in the join propagated with nothing cancelled — and the join is where a scope
   spends nearly all of its life, so Ctrl-C on a waiting producer left its children
-  running. With supervision cut this stops being a quality fix and becomes the only
-  thing that cancels children when a scope ends badly.
+  running. Every path out of a scope has to unwind correctly, because nothing outside
+  the process will do it for you.
 - **A cancel watcher that *raised* was read as a cancellation.** `asyncio.wait`
   reports "done" for a task that raised exactly as for one that returned, so a dropped
   pub/sub connection wrote `cancelled` over work that was still running and threw the
@@ -124,36 +124,6 @@ Phase 4. Cancellation that reliably crosses processes — and the deliberate dec
   is now one pump per process. `test_version.py` also gained the check that was missing
   when the `v0.3.0` tag shipped a tree whose `pyproject.toml` still said `0.0.3`: the
   packaged version must equal the newest heading in this file.
-
-### Cut
-
-- **Heartbeat-based scope reaping — cancelling a dead producer's children — is
-  removed from Phase 4.** It was fully built and green (381 tests) before being
-  withdrawn, so this is a decision rather than an omission.
-
-  The accepted cost, stated exactly: if a process that spawned jobs is killed outright
-  (`SIGKILL`, OOM, a pulled plug), **its jobs run to completion and their results
-  expire unread.** You pay worker time for work nobody is waiting on. Nothing is lost,
-  nothing is stranded and no keys leak — each orphaned child still frees its own record
-  on its terminal write — and jobs *in flight on a dead worker* are unaffected: that is
-  the Phase 3 lease reaper and it is untouched.
-
-  Three reasons, in increasing weight. It was the worst effort-to-value ratio in the
-  phase: a new key family, a conditional `SADD` inside enqueue's `MULTI`, an `SREM` in
-  the save script, a second reaper walk. A heartbeat can be wrong in the *stale*
-  direction and there was no fencing — demonstrated at runtime against the built
-  version, a worker running a live scope had its own child cancelled by a peer's `reap`
-  while it was alive and serving, because the beat shares an event loop with the jobs
-  and a CPU-bound task starves it. **Cancelling live work is a worse failure than
-  wasting dead work.** And producer liveness has to come from the producer process: a
-  pure producer has no reason to run a beat loop, so giving every scope a background
-  timer taxes every user for a failure mode most never hit.
-
-  `Job.group_id` survives the cut (see Added). `producer_id`, `MemoryBackend.instance_id`
-  and the `workers` → `INSTANCES` rename are all reverted; the Redis key layout is
-  exactly Phase 3's. The withdrawn design is preserved in Appendix A of
-  `reviews/2026-08-23-phase4-elaboration.md` so it is recoverable rather than
-  re-derived.
 
 ### Deferred
 
