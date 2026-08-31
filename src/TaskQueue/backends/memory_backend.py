@@ -18,6 +18,9 @@ class MemoryBackend(Backend):
         self._cancels: dict[str, asyncio.Event] = {}
 
     async def enqueue(self, job_id: str, record: dict[str, Any]) -> None:
+        if job_id in self._jobs:
+            logger.debug("enqueue of job %s ignored: already known", job_id)
+            return
         self._jobs[job_id] = record
         self._events[job_id] = asyncio.Event()
         self._cancels[job_id] = asyncio.Event()

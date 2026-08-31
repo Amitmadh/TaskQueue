@@ -2,6 +2,47 @@
 
 All notable changes documented here.
 
+## [Unreleased]
+
+Phase 5, in progress.
+
+### Added
+
+- **A task body that runs twice no longer forks its subtree.** At-least-once delivery
+  means any body can run twice, and Phase 5's retries will re-run bodies on purpose. A
+  leaf task only has to be idempotent in its own effects, but a *spawning* task has an
+  enqueue as a side effect: measured before this change, a redelivered parent turned 2
+  children into 4, with the first pair still running and owned by nobody. Two halves
+  close it, and neither works alone —
+  - `TaskQueue.context` holds a `JobContext` in a `ContextVar`, set by
+    `Worker._process` *before* it creates the task, because a task copies the context
+    at creation and anything set afterwards is invisible to the body. `JobGroup.spawn`
+    seeds each child's id on it: `sha1(f"{parent.job_id}:{n}")[:32]`, where `n` is a
+    counter per **body**, not per scope — a scope's id is a fresh `uuid4` on every
+    construction, so it cannot appear in a seed that has to survive a re-run, and
+    counting per body is what stops two sequential scopes from both claiming ordinal 0.
+    Outside a job there is nothing to derive from, so `Job` still falls back to `uuid4`.
+  - `Backend.enqueue` refuses an id it already knows. On Redis it stopped being a
+    plain `MULTI` and became a Lua script, for the same reason as every other guard
+    in that backend: `EXISTS` then `HSET`+`RPUSH` is a check-then-act, and `MULTI`
+    cannot branch.
+- **`tests/test_child_ids.py`** — both halves and the consequence, on both backends.
+  The guard is asserted through `claim` rather than through the record, because an
+  implementation that skipped the record write but still pushed the id would leave a
+  job that is claimed twice. The end-to-end test settles and asserts *before* reading
+  any result: `take_result` frees the record a duplicate claim would need, so consuming
+  results first hides the very fork the test exists to catch. Removing either half
+  fails it on both backends.
+
+### Known limitation
+
+- A redelivery that *overlaps* its predecessor is still not safe: two live bodies of
+  one job contend for the same children's results, and `take_result` is
+  single-consumer, so one of them waits forever. The reaper only redelivers a job whose
+  worker is already gone, so no path today produces it — but a retry that fires while
+  the first attempt is still running would, which is a constraint on the retry design
+  rather than a solved problem.
+
 ## [0.4.0] - 2026-08-30
 
 Phase 4. Cancellation that reliably crosses processes: delivered through the backend,

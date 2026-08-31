@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from enum import StrEnum
+from hashlib import sha1
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from TaskQueue.context import current_job
 from TaskQueue.exceptions import JobCancelled
 
 if TYPE_CHECKING:
@@ -25,6 +27,16 @@ class OnError(StrEnum):
     CANCEL_SIBLINGS = "cancel_siblings"
     IGNORE = "ignore"
     COLLECT = "collect"
+
+
+def _child_id() -> str | None:
+    """A job id seeded on the job doing the spawning, or None to generate one.
+    Returns None outside a job; 'Job' then falls back to uuid4.
+    """
+    parent = current_job.get()
+    if parent is None:
+        return None
+    return sha1(f"{parent.job_id}:{parent.next_spawn()}".encode()).hexdigest()[:32]
 
 
 class JobGroup:
@@ -151,7 +163,9 @@ class JobGroup:
     async def spawn[**P, R](
         self, task: Task[P, R], *args: P.args, **kwargs: P.kwargs
     ) -> JobHandle[R]:
-        handle = await task.submit(self.id if self._entered else None, *args, **kwargs)
+        handle = await task.submit(
+            self.id if self._entered else None, _child_id(), *args, **kwargs
+        )
         self._handles[handle.job_id] = handle
         if self._entered:
             waiter = asyncio.create_task(handle.result())

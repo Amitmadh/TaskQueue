@@ -1,18 +1,13 @@
 import asyncio
 import contextlib
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from uuid import uuid4
 
 import redis.asyncio as redis
 
 from TaskQueue.backends.interface import Backend
 from TaskQueue.job import JobStatus
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-    from redis.typing import EncodableT, FieldT
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +51,21 @@ def cancel_channel(job_id: str) -> str:
 _TERMINAL_LUA = (
     "{" + ", ".join(f"{status} = true" for status in sorted(_TERMINAL)) + "}"
 )
+
+_ENQUEUE_SCRIPT = """
+local job = KEYS[1]
+local queue = KEYS[2]
+local job_id = ARGV[1]
+
+if redis.call('EXISTS', job) == 1 then
+    return 0
+end
+
+redis.call('HSET', job, unpack(ARGV, 2))
+redis.call('RPUSH', queue, job_id)
+
+return 1
+"""
 
 _CLAIM_SCRIPT = """
 local job = KEYS[1]
@@ -198,6 +208,7 @@ class RedisBackend(Backend):
             raise ValueError(f"worker_ttl (={worker_ttl}) need to be greater than 0")
         self._result_ttl: int = result_ttl
         self._worker_ttl: int = worker_ttl
+        self._enqueue_script = redis_client.register_script(_ENQUEUE_SCRIPT)
         self._claim_script = redis_client.register_script(_CLAIM_SCRIPT)
         self._save_script = redis_client.register_script(_SAVE_SCRIPT)
         self._release_script = redis_client.register_script(_RELEASE_SCRIPT)
@@ -231,12 +242,16 @@ class RedisBackend(Backend):
 
     async def enqueue(self, job_id: str, record: dict[str, str | bytes]) -> None:
         record["status"] = JobStatus.QUEUED.value
-        async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.hset(
-                job_key(job_id), mapping=cast("Mapping[FieldT, EncodableT]", record)
-            )
-            pipe.rpush(QUEUE, job_id)
-            await pipe.execute()
+        flattened: list[str | bytes] = []
+        for field, value in record.items():
+            flattened.extend([field, value])
+
+        created = await self._enqueue_script(
+            keys=[job_key(job_id), QUEUE], args=[job_id, *flattened]
+        )
+        if created == 0:
+            logger.debug("enqueue of job %s ignored: already known", job_id)
+            return
         logger.debug("enqueued job %s", job_id)
 
     async def claim(self) -> dict[str, str | bytes] | None:

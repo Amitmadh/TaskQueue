@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from TaskQueue.context import JobContext, current_job
 from TaskQueue.exceptions import ConfigError
 from TaskQueue.job import Job, JobStatus
 
@@ -142,6 +143,15 @@ class Worker:
 
     async def _process(self, record: dict[str, Any]) -> None:
         job = Job.from_record(record, self._serializer)
+        token = current_job.set(
+            JobContext(job.id, job.group_id, job.task_name, job.attempts)
+        )
+        try:
+            await self._run(job)
+        finally:
+            current_job.reset(token)
+
+    async def _run(self, job: Job) -> None:
         logger.debug("processing job %s (task=%s)", job.id, job.task_name)
         if job.request_cancel:
             job.status = JobStatus.CANCELLED

@@ -192,7 +192,7 @@ See the [changelog](CHANGELOG.md) for what's actually done.
 A quick tour of the pieces, in roughly the order they execute:
 
 - `Queue` is the user-facing facade. Holds the backend, the task registry, and creates scopes.
-- `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.submit(group_id, ...)`, which `JobGroup.spawn` calls to enqueue.
+- `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.submit(group_id, job_id, ...)`, which `JobGroup.spawn` calls to enqueue.
 - `Job` is the serialized unit of work that crosses the wire (id, task name, args, scope id, status).
 - `JobGroup` is the structured-concurrency scope. Its `__aexit__` blocks until all children finish or are cancelled.
 - `Backend` is the `Protocol` for persistence. Built: `MemoryBackend` and `RedisBackend`; SQLite comes after v1.0.
