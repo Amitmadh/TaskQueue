@@ -13,7 +13,7 @@
 
 ## What's different
 
-**Structured concurrency, distributed.** Built on the same idea as `asyncio.TaskGroup` and Trio's nurseries, extended across processes. Jobs are spawned into a *scope* (`JobGroup`). The scope's `async with` block doesn't exit until every child reaches a terminal state. If one child fails, its siblings are cancelled and the failure propagates up the scope tree. If a *worker* process dies, a heartbeat-based reaper returns its in-flight jobs to the queue so nothing is stranded. Applying the same mechanism to a dead *scope owner* — cancelling its children rather than reclaiming its leases — is Phase 4.
+**Structured concurrency, distributed.** Built on the same idea as `asyncio.TaskGroup` and Trio's nurseries, extended across processes. Jobs are spawned into a *scope* (`JobGroup`). The scope's `async with` block doesn't exit until every child reaches a terminal state. If one child fails, its siblings are cancelled and the failure propagates up the scope tree. Cancellation crosses process boundaries: `handle.cancel()` here stops a job already running on a worker over there. If a *worker* process dies, a heartbeat-based reaper returns its in-flight jobs to the queue so nothing is stranded. What it deliberately does **not** do is cancel a dead *producer's* children — see [What survives a crash](#what-survives-a-crash-and-what-doesnt).
 
 **End-to-end type safety.** `@q.task` preserves the wrapped function's signature via `ParamSpec`, so `g.spawn(add, 2, 3)` is type-checked against `add`'s signature and `await handle.result()` is correctly typed as `int`. The whole codebase runs under Pyright in strict mode.
 
@@ -113,6 +113,26 @@ serializer to use. That makes it impossible for a producer and a worker to disag
 serialization. `taskqueue backends` and `taskqueue serializers` list what the package
 ships.
 
+## What survives a crash, and what doesn't
+
+A scope cancels its children whenever Python still runs: a sibling fails, the body
+raises, the deadline passes, or the owning task is cancelled. That covers every
+ordinary ending, including Ctrl-C on the process that owns the scope. Cancellation is
+delivered through the backend, so it reaches a job already running in another process
+— and a dropped notification costs latency, not correctness, because the waiting side
+re-reads the durable record rather than trusting the message to arrive.
+
+What it does not cover is a process killed outright — `SIGKILL`, OOM, a pulled plug.
+Its jobs keep running to completion and their results expire unread; you pay worker
+time for work nobody is waiting on. Detecting that automatically would mean inferring
+a producer's liveness from a heartbeat, and a beat that goes quiet because a process is
+busy looks exactly like one that went quiet because it died — so the cost of getting it
+wrong is cancelling work that is still running. Wasting dead work is the cheaper
+mistake, and it is the one this library makes.
+
+Jobs that were *in flight on a dead worker* are a different matter, and those are
+reclaimed — that is the reaper, described above.
+
 ## Comparison with existing queues
 
 | Feature                            | Celery    | RQ        | Dramatiq  | Arq | TaskQueue           |
@@ -120,7 +140,7 @@ ships.
 | Async-native worker                | ✗ ¹       | ✗         | partial ² | ✓   | ✓                   |
 | Type-safe enqueue (ParamSpec)      | ✗         | ✗         | ✗         | ✗   | ✓                   |
 | Structured concurrency / scopes    | ✗         | ✗         | ✗         | ✗   | ✓                   |
-| Cross-process cancellation         | partial ³ | partial ⁴ | ✗         | ✓   | planned (Phase 4)   |
+| Cross-process cancellation         | partial ³ | partial ⁴ | ✗         | ✓   | ✓                   |
 | SQLite backend                     | partial ⁵ | ✗         | ✗         | ✗   | planned (post-v1.0) |
 | Redis backend                      | ✓         | ✓         | ✓         | ✓   | ✓                   |
 | `ExceptionGroup` error propagation | ✗         | ✗         | ✗         | ✗   | ✓                   |
@@ -152,7 +172,7 @@ I'm building this in vertical slices — each phase ends with a working demo and
 - [x] **Phase 1** — In-memory queue, `@task` with `ParamSpec`, basic worker
 - [x] **Phase 2** — `JobGroup` scopes, fail-fast/collect/ignore modes, deadlines, cooperative cancellation, nested scopes
 - [x] **Phase 3** — Redis backend with reliable delivery, multi-process workers, graceful drain, heartbeat-based reclaim of dead workers' jobs, CLI
-- [ ] **Phase 4** — Cross-process cancellation, heartbeat-based scope reaping
+- [x] **Phase 4** — Cross-process cancellation, with a poll backup so a dropped notification cannot strand a waiter
 - [ ] **Phase 5** — Retries, structured logging, metrics, middleware
 - [ ] **Phase 6** — OpenTelemetry instrumentation
 - [ ] **Phase 7** — Documentation
@@ -177,14 +197,15 @@ A quick tour of the pieces, in roughly the order they execute:
 - `JobGroup` is the structured-concurrency scope. Its `__aexit__` blocks until all children finish or are cancelled.
 - `Backend` is the `Protocol` for persistence. Built: `MemoryBackend` and `RedisBackend`; SQLite comes after v1.0.
 - `Worker` pulls jobs from a backend and runs them, async-native, with a small executor that handles cancellation injection.
-- The reaper runs inside every worker. Each process writes its own timestamp into a `workers` sorted set every few seconds; any worker whose last beat is older than `worker_ttl` is presumed dead and its processing list is drained back onto the queue. Phase 4 points the same machinery at scope owners, cancelling their children instead of reclaiming leases.
+- The reaper runs inside every worker. Each process writes its own timestamp into a `workers` sorted set every few seconds; any worker whose last beat is older than `worker_ttl` is presumed dead and its processing list is drained back onto the queue. It reclaims **leases** — a scope's children are cancelled by the scope itself, in the process that owns it.
 
-I'll write a longer `docs/architecture.md` once the design has stopped moving — probably
-after Phase 4. The Redis-specific patterns are the things I most want to document properly:
-reliable delivery via per-worker processing lists, subscribe-then-check for race-free result
-waits, and why the reaper needs **no** distributed lock — the reclaim is a single atomic Lua
-script, so concurrent reapers cost a wasted round trip rather than a duplicated job, and a
-lock that expired mid-operation would be the only way to break that.
+[**`docs/architecture.md`**](docs/architecture.md) is the longer version, written now
+that Phase 4 has stopped the design moving. It covers the Redis-specific patterns properly:
+reliable delivery via per-worker processing lists, the two-step lease and everything that
+follows from it, subscribe-then-check plus the poll backup for race-free waits, the
+cancellation protocol, and why the reaper needs **no** distributed lock — the reclaim is a
+single atomic Lua script, so concurrent reapers cost a wasted round trip rather than a
+duplicated job, and a lock that expired mid-operation would be the only way to break that.
 
 ## Inspiration
 

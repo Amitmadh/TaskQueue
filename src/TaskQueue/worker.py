@@ -122,6 +122,10 @@ class Worker:
                     )
                 except asyncio.CancelledError:
                     raise
+                except KeyError:
+                    logger.debug(
+                        "job %s was already finished and collected", record["id"]
+                    )
                 except Exception:
                     logger.warning(
                         "job %s could not be released on shutdown; "

@@ -6,6 +6,8 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from TaskQueue.exceptions import JobCancelled
+
 if TYPE_CHECKING:
     from types import TracebackType
 
@@ -118,6 +120,10 @@ class JobGroup:
         failure = waiter.exception()
         if failure is None:
             return  # it finished fine
+
+        if self._cancelling and isinstance(failure, JobCancelled):
+            return
+
         self._failures.append(failure)
 
         if self._cancelling:

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from TaskQueue import job_group
+from TaskQueue.exceptions import JobCancelled
 from TaskQueue.job import JobStatus
 from TaskQueue.queue import Queue
 
@@ -254,6 +255,170 @@ async def test_cancel_siblings_cancels_inflight_on_first_failure(
         assert h1 is not None and h2 is not None
         assert await h1.status() == JobStatus.CANCELLED
         assert await h2.status() == JobStatus.CANCELLED
+
+
+async def test_a_task_can_open_its_own_scope(queue: Queue) -> None:
+    """A job that is itself a producer.
+
+    Nothing in the worker distinguishes a task that spawns from one that does
+    not: 'async with queue.group()' is the same construct inside a job as inside
+    a script, and that nesting is what "jobs have parent-child relationships"
+    means. Untested until now, despite being the headline of the README.
+
+    Note the pool width. A parent occupies a worker slot for as long as it waits
+    on its children, so the pool has to hold the parent AND at least one child —
+    at 'concurrency=1' this deadlocks outright, with the parent holding the only
+    slot and no child able to be claimed.
+    """
+
+    @queue.task
+    async def child(n: int) -> int:
+        return n * 10
+
+    @queue.task
+    async def parent() -> int:
+        async with queue.group() as inner:
+            counts = [await inner.spawn(child, n) for n in range(3)]
+        return sum([await count.result() for count in counts])
+
+    async with queue.worker(concurrency=4):
+        handle = await queue.root_group().spawn(parent)
+        assert await asyncio.wait_for(handle.result(), 10) == 30
+
+
+async def test_cancelling_a_parent_job_cancels_the_children_it_spawned(
+    queue: Queue,
+) -> None:
+    """The guarantee crosses the job boundary, not just the process boundary.
+
+    Cancelling the parent interrupts its task, which lands as a 'CancelledError'
+    inside its scope's join — the one arm of '__aexit__' that exists for this —
+    and that arm is what tears the children down. Without it the parent reports
+    cancelled while the work it started runs on, which is precisely the orphan
+    this library claims not to produce.
+    """
+    running: list[int] = []
+    stopped: list[int] = []
+    forever = asyncio.Event()  # never set: children only end via cancellation
+
+    @queue.task
+    async def child(n: int) -> int:
+        running.append(n)
+        try:
+            await forever.wait()
+        except asyncio.CancelledError:
+            stopped.append(n)  # printed from the child's own unwinding
+            raise
+        return n
+
+    @queue.task
+    async def parent() -> int:
+        async with queue.group() as inner:
+            handles = [await inner.spawn(child, n) for n in range(3)]
+        return sum([await handle.result() for handle in handles])
+
+    async with queue.worker(concurrency=4):
+        handle = await queue.root_group().spawn(parent)
+
+        # Wait for the children to be RUNNING, not merely spawned: a cancel that
+        # lands while they are still queued proves nothing about reaching into a
+        # job that is already executing.
+        for _ in range(150):
+            if len(running) == 3:
+                break
+            await asyncio.sleep(0.02)
+        assert sorted(running) == [0, 1, 2], f"children never started: {running}"
+
+        await handle.cancel()
+        with pytest.raises(JobCancelled):
+            await asyncio.wait_for(handle.result(), 3)
+
+        # Waited for, not assumed. The parent's record goes terminal as soon as
+        # its own task is cancelled, which is BEFORE the children it spawned have
+        # finished unwinding — on Redis the extra round trips hide that gap, on
+        # MemoryBackend they do not, and an assertion here read straight after
+        # 'result()' sees an empty list on one backend and a full one on the
+        # other.
+        for _ in range(150):
+            if len(stopped) == 3:
+                break
+            await asyncio.sleep(0.02)
+
+        # Asserted INSIDE the pool. Leaving the 'async with' cancels the worker
+        # loops, which cancels the children's tasks and fills this list for a
+        # reason that has nothing to do with the scope — the test would then
+        # pass with the guard it exists for removed.
+        assert sorted(stopped) == [0, 1, 2], (
+            f"cancelling the parent did not reach its children: {stopped}"
+        )
+
+
+async def test_a_fail_fast_scope_reports_only_what_broke_it(queue: Queue) -> None:
+    """'except* RuntimeError' must fully handle a fail-fast scope.
+
+    The siblings a scope cancels raise 'JobCancelled' in their waiters. Recorded
+    as failures they land in the same 'BaseExceptionGroup' as the error that
+    actually broke the scope — where an 'except*' on the real exception type
+    cannot match them, so they escape as an unhandled residual group and crash
+    the very 'try' that was written to catch the failure. 'asyncio.TaskGroup'
+    propagates what broke it, not the cancellations it issued in response, and a
+    scope that claims to work the same way has to do the same.
+
+    Written as a user would write it rather than by inspecting the group: if
+    anything other than the failure is in there, the 'except*' below does not
+    match it and this test errors out on the residual instead of failing an
+    assertion. That is the README's own example, and it crashed.
+    """
+    forever = asyncio.Event()  # never set: siblings only end via cancellation
+
+    @queue.task
+    async def boom() -> int:
+        raise RuntimeError("job hit a wall")
+
+    @queue.task
+    async def sibling() -> int:
+        await forever.wait()
+        return 1
+
+    caught: list[BaseException] = []
+    async with queue.worker(concurrency=4):
+        try:
+            async with queue.group() as g:
+                for _ in range(3):
+                    await g.spawn(sibling)
+                await g.spawn(boom)
+        except* RuntimeError as failures:
+            caught.extend(failures.exceptions)
+
+    assert len(caught) == 1, caught
+    assert "job hit a wall" in str(caught[0])
+
+
+async def test_a_cancellation_the_scope_did_not_cause_is_still_a_failure(
+    queue: Queue,
+) -> None:
+    """The gate is 'did we ask for this', not 'is it a JobCancelled'.
+
+    Suppressing every 'JobCancelled' would hide a real outcome: a job somebody
+    else cancelled is not collateral, and a scope that swallowed it would exit
+    cleanly having never run the work.
+    """
+    forever = asyncio.Event()
+
+    @queue.task
+    async def sibling() -> int:
+        await forever.wait()
+        return 1
+
+    async with queue.worker(concurrency=2):
+        with pytest.raises(BaseExceptionGroup) as raised:
+            async with queue.group() as g:
+                handle = await g.spawn(sibling)
+                await handle.cancel()  # nothing has failed; this is not teardown
+
+    assert [type(exc) for exc in raised.value.exceptions] == [JobCancelled], (
+        raised.value.exceptions
+    )
 
 
 async def test_a_failure_cancels_siblings_before_the_body_finishes(

@@ -1,9 +1,9 @@
 for_me.md
 build_plan.md
 .venv/
-./venv-linux
+.venv-linux/
 .ruff_cache/
 .pytest_cache/
 __pycache__/
 dist/
-./reviews
+reviews/
