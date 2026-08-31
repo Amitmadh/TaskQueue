@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 10.0
 _CLAIM_ERROR_BACKOFF_SECONDS = 1.0
 _MIN_BEATS_PER_TTL = 3
+_CANCEL_UNWIND_TIMEOUT_SECONDS = 30.0
 
 
 def check_liveness(backend: Backend, heartbeat_interval: float) -> None:
@@ -197,6 +198,17 @@ class Worker:
                 job.status = JobStatus.COMPLETED
                 logger.debug("job %s completed", job.id)
             else:
+                job_task.cancel()
+                _, unwound = await asyncio.wait(
+                    [job_task], timeout=_CANCEL_UNWIND_TIMEOUT_SECONDS
+                )
+                if unwound:
+                    logger.warning(
+                        "job %s did not finish unwinding within %gs; reporting "
+                        "it cancelled anyway. Jobs it spawned may outlive it.",
+                        job.id,
+                        _CANCEL_UNWIND_TIMEOUT_SECONDS,
+                    )
                 job.status = JobStatus.CANCELLED
                 logger.debug("job %s cancelled", job.id)
             await self._save(job)
