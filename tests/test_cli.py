@@ -453,3 +453,33 @@ def test_bad_liveness_settings_exit_three(
     )
     assert main(["worker", f"{name}:q", "--heartbeat-interval", "10"]) == 3
     assert "worker_ttl" in capsys.readouterr().err
+
+
+@pytest.mark.timeout(20, method="thread")
+def test_a_pool_that_cannot_start_does_not_announce_that_it_is_serving(
+    module_factory: Callable[[str, str], str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 'serving N task(s)' is a claim about a running process. Logging it from a
+    # pool that then refuses to start makes a config rejection read as a crash
+    # mid-service. The pool is constructed before anything is announced.
+    name = module_factory(
+        "cli_liveness_order",
+        """
+        import fakeredis
+
+        from TaskQueue import Queue
+        from TaskQueue.backends.redis_backend import RedisBackend
+
+        q = Queue(RedisBackend(fakeredis.FakeAsyncRedis(), worker_ttl=5))
+
+        @q.task
+        async def pack() -> int:
+            return 1
+        """,
+    )
+    assert main(["worker", f"{name}:q", "--heartbeat-interval", "10"]) == 3
+    captured = capsys.readouterr()
+    assert "worker_ttl" in captured.err
+    assert "serving" not in captured.out + captured.err
+    # and the remedy names the knob this caller actually holds
+    assert "--heartbeat-interval" in captured.err

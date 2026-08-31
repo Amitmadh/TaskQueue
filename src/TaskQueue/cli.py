@@ -83,6 +83,8 @@ async def run_worker(
     in-flight progress, which is exactly what the drain exists to avoid paying
     for on an ordinary restart.
     """
+    pool = queue.worker(concurrency=concurrency, heartbeat_interval=heartbeat_interval)
+
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signal_name in ("SIGINT", "SIGTERM"):
@@ -102,9 +104,7 @@ async def run_worker(
     else:
         logger.warning("no tasks are registered on this queue; every job will fail")
 
-    async with queue.worker(
-        concurrency=concurrency, heartbeat_interval=heartbeat_interval
-    ) as workers:
+    async with pool as workers:
         logger.info("worker ready (concurrency=%d); ctrl-c to stop", concurrency)
         await stop.wait()
 
@@ -216,6 +216,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     except ConfigError as exc:
         print(f"taskqueue: {exc}", file=sys.stderr)
+        print(
+            "taskqueue: set the interval here with --heartbeat-interval; "
+            "worker_ttl is set where the Queue's backend is built.",
+            file=sys.stderr,
+        )
         return EXIT_BAD_CONFIG
     except KeyboardInterrupt:
         logger.info("interrupted; worker pool stopped")
