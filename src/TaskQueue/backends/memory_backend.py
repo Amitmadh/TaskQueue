@@ -119,3 +119,6 @@ class MemoryBackend(Backend):
 
     async def reap(self) -> int:
         return 0
+
+    async def deregister(self) -> None:
+        return

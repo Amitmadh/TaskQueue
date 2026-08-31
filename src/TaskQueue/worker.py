@@ -91,6 +91,7 @@ class Worker:
 
         await asyncio.gather(*self.workers, return_exceptions=True)
         await self._stop_upkeep()
+        await self._deregister()
         logger.info("worker pool stopped")
 
     async def _worker_loop(self) -> None:
@@ -264,6 +265,19 @@ class Worker:
             except Exception:
                 logger.exception("worker upkeep failed; continuing")
             await asyncio.sleep(self._heartbeat_interval)
+
+    async def _deregister(self) -> None:
+        """Leave the liveness set. Best-effort: the TTL is the fallback."""
+        try:
+            await asyncio.shield(self._backend.deregister())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "could not withdraw from the liveness set on shutdown; "
+                "leaving it to expire",
+                exc_info=True,
+            )
 
     async def _stop_upkeep(self) -> None:
         upkeep, self._upkeep = self._upkeep, None

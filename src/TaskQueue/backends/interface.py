@@ -117,6 +117,21 @@ class Backend(Protocol):
         """
         ...
 
+    async def deregister(self) -> None:
+        """Withdraw this worker from the liveness set on a clean shutdown.
+
+        The counterpart to 'heartbeat'. Without it a stopped worker leaves a
+        tombstone that only a *later* worker's 'reap' can clear, so a fleet that
+        scales to zero never forgets the workers it used to have.
+
+        Must be a no-op while this worker still holds leases: the liveness entry
+        is the only thing that points a reaper at its processing list, so
+        withdrawing early strands those jobs where nothing will ever look for
+        them. Best-effort -- a shutdown that cannot reach the backend falls back
+        to the TTL, which is what the reaper is for.
+        """
+        ...
+
     async def reap(self) -> int:
         """Return the leases of presumed-dead workers to the queue.
 

@@ -152,6 +152,20 @@ redis.call('ZADD', KEYS[1], now, ARGV[1])
 return 1
 """
 
+_DEREGISTER_SCRIPT = """
+local workers = KEYS[1]
+local processing = KEYS[2]
+local worker = ARGV[1]
+
+-- The liveness entry is the only pointer to this worker's processing list.
+-- Dropping it while leases remain would hide them from every future reaper.
+if redis.call('LLEN', processing) > 0 then
+    return 0
+end
+
+return redis.call('ZREM', workers, worker)
+"""
+
 _REAPER_SCRIPT = """
 local workers = KEYS[1]
 local queue = KEYS[2]
@@ -217,6 +231,7 @@ class RedisBackend(Backend):
         )
         self._heartbeat_script = redis_client.register_script(_HEARTBEAT_SCRIPT)
         self._reaper_script = redis_client.register_script(_REAPER_SCRIPT)
+        self._deregister_script = redis_client.register_script(_DEREGISTER_SCRIPT)
 
         self._processing_key: str = processing_key(self._instance_id)
 
@@ -390,6 +405,15 @@ class RedisBackend(Backend):
 
     async def heartbeat(self) -> None:
         await self._heartbeat_script(keys=[WORKERS], args=[self._instance_id])
+
+    async def deregister(self) -> None:
+        withdrawn = await self._deregister_script(
+            keys=[WORKERS, self._processing_key], args=[self._instance_id]
+        )
+        if withdrawn:
+            logger.debug("worker %s withdrawn from the liveness set", self._instance_id)
+        else:
+            logger.info("worker %s still holds leases", self._instance_id)
 
     async def reap(self) -> int:
         reclaimed, dropped = await self._reaper_script(

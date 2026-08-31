@@ -17,6 +17,7 @@ REQUIRED = {
     "wait_cancel",
     "heartbeat",
     "reap",
+    "deregister",
 }
 
 
