@@ -23,13 +23,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from TaskQueue import MemoryBackend, __version__
+from TaskQueue import __version__
 from TaskQueue.cli import (
-    ConfigError,
     TargetError,
     available,
     build_parser,
-    check_liveness,
     main,
     resolve_queue,
 )
@@ -426,35 +424,17 @@ def test_second_signal_abandons_the_drain(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# liveness settings
+# liveness settings — the rule itself lives with 'Worker' now
+# (tests/test_lease_invariants.py); what is CLI-specific is the exit code.
 # --------------------------------------------------------------------------
 
 
-def _queue_with_ttl(worker_ttl: int) -> Queue:
-    import fakeredis
-
-    from TaskQueue.backends.redis_backend import RedisBackend
-
-    return Queue(RedisBackend(fakeredis.FakeAsyncRedis(), worker_ttl=worker_ttl))
-
-
-@pytest.mark.parametrize("interval", [10.0, 5.0, 1.0])
-def test_liveness_accepts_an_interval_with_margin(interval: float) -> None:
-    check_liveness(_queue_with_ttl(30), interval)
-
-
-@pytest.mark.parametrize("interval", [10.1, 15.0, 60.0])
-def test_liveness_rejects_an_interval_too_close_to_the_ttl(interval: float) -> None:
-    # Every worker would be presumed dead between its own beats, so peers would
-    # reclaim jobs that are still running.
-    with pytest.raises(ConfigError, match="worker_ttl"):
-        check_liveness(_queue_with_ttl(30), interval)
-
-
-def test_liveness_ignores_a_backend_without_a_ttl() -> None:
-    check_liveness(Queue(MemoryBackend()), 3600.0)
-
-
+# 'method="thread"' because the signal method cannot rescue this one. The check
+# now lives in 'Worker.__init__', so if it ever regresses this call does not
+# return 3 -- it starts a worker and blocks in 'await stop.wait()' for a signal
+# no one will send. Measured: the module's 30s mark never fired and the test ran
+# past four minutes. The thread method bounds it loudly instead.
+@pytest.mark.timeout(20, method="thread")
 def test_bad_liveness_settings_exit_three(
     module_factory: Callable[[str, str], str], capsys: pytest.CaptureFixture[str]
 ) -> None:

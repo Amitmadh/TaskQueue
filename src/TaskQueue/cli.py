@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from TaskQueue import __version__, backends, serializers
+from TaskQueue.exceptions import ConfigError
 from TaskQueue.logger import setup_logging
 from TaskQueue.queue import Queue
 from TaskQueue.worker import DEFAULT_HEARTBEAT_INTERVAL_SECONDS
@@ -25,33 +26,12 @@ EXIT_OK = 0
 EXIT_BAD_TARGET = 1
 EXIT_BAD_CONFIG = 3
 
-_MIN_BEATS_PER_TTL = 3
-
 _BACKEND_SUFFIX = "_backend"
 _SERIALIZER_SUFFIX = "_serializer"
 
 
 class TargetError(Exception):
     """The '<module>:<attr>' target could not be resolved to a 'Queue'."""
-
-
-class ConfigError(Exception):
-    """Settings that would misbehave at runtime rather than fail at startup."""
-
-
-def check_liveness(queue: Queue, heartbeat_interval: float) -> None:
-    """Refuse a heartbeat interval too close to the backend's worker TTL."""
-    worker_ttl: object = getattr(queue.backend, "worker_ttl", None)
-    if not isinstance(worker_ttl, int):
-        return
-    if worker_ttl < heartbeat_interval * _MIN_BEATS_PER_TTL:
-        raise ConfigError(
-            f"--heartbeat-interval {heartbeat_interval:g}s is too long for this "
-            f"backend's worker_ttl of {worker_ttl}s."
-            f"Use an interval of at most {worker_ttl / _MIN_BEATS_PER_TTL:g}s, or "
-            f"raise worker_ttl to at least "
-            f"{heartbeat_interval * _MIN_BEATS_PER_TTL:g}s where the backend is built."
-        )
 
 
 def available(package_path: Iterable[str], suffix: str) -> list[str]:
@@ -226,12 +206,6 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_BAD_TARGET
 
     try:
-        check_liveness(queue, args.heartbeat_interval)
-    except ConfigError as exc:
-        print(f"taskqueue: {exc}", file=sys.stderr)
-        return EXIT_BAD_CONFIG
-
-    try:
         asyncio.run(
             run_worker(
                 queue,
@@ -240,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.heartbeat_interval,
             )
         )
+    except ConfigError as exc:
+        print(f"taskqueue: {exc}", file=sys.stderr)
+        return EXIT_BAD_CONFIG
     except KeyboardInterrupt:
         logger.info("interrupted; worker pool stopped")
     return EXIT_OK

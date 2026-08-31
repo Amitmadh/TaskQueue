@@ -3,7 +3,7 @@ from importlib.metadata import version
 
 from TaskQueue.backends.interface import Backend
 from TaskQueue.backends.memory_backend import MemoryBackend
-from TaskQueue.exceptions import JobCancelled, TaskNameError
+from TaskQueue.exceptions import ConfigError, JobCancelled, TaskNameError
 from TaskQueue.handle import JobHandle
 from TaskQueue.job import Job, JobStatus
 from TaskQueue.logger import setup_logging
@@ -21,6 +21,7 @@ __all__ = [
     "Queue",
     "Task",
     "Job",
+    "ConfigError",
     "JobCancelled",
     "JobHandle",
     "JobStatus",

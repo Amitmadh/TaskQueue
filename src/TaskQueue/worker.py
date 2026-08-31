@@ -4,6 +4,7 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
+from TaskQueue.exceptions import ConfigError
 from TaskQueue.job import Job, JobStatus
 
 if TYPE_CHECKING:
@@ -16,6 +17,23 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 10.0
 _CLAIM_ERROR_BACKOFF_SECONDS = 1.0
+_MIN_BEATS_PER_TTL = 3
+
+
+def check_liveness(backend: Backend, heartbeat_interval: float) -> None:
+    """Refuse a heartbeat interval too close to the backend's worker TTL."""
+    worker_ttl: object = getattr(backend, "worker_ttl", None)
+    if not isinstance(worker_ttl, int):
+        return
+    if worker_ttl < heartbeat_interval * _MIN_BEATS_PER_TTL:
+        raise ConfigError(
+            f"heartbeat_interval of {heartbeat_interval:g}s is too long for "
+            f"this backend's worker_ttl of {worker_ttl}s: every worker would be "
+            f"presumed dead between its own beats, and peers would reclaim jobs "
+            f"that are still running. Use an interval of at most "
+            f"{worker_ttl / _MIN_BEATS_PER_TTL:g}s, or build the backend with a "
+            f"worker_ttl of at least {heartbeat_interval * _MIN_BEATS_PER_TTL:g}s."
+        )
 
 
 class Worker:
@@ -27,6 +45,7 @@ class Worker:
     ) -> None:
         self.queue: Queue = queue
         self._backend: Backend = queue.backend
+        check_liveness(self._backend, heartbeat_interval)
         self._serializer: Serializer = queue.serializer
         self._task_registry: dict[str, Task[Any, Any]] = queue.task_registry
         self.concurrency = concurrency
@@ -48,6 +67,9 @@ class Worker:
             )
         self._entered = True
         self._running = True
+
+        # Register before any loop can claim, and await it.
+        await self._backend.heartbeat()
 
         for _ in range(self.concurrency):
             worker = asyncio.create_task(self._worker_loop())
@@ -91,11 +113,22 @@ class Worker:
             except asyncio.CancelledError:
                 # Interrupted before a terminal write (shutdown/cancel): hand the
                 # lease back so the job is redelivered, never stranded in RUNNING.
-                await asyncio.shield(self._backend.release(record["id"]))
-                logger.info(
-                    "job %s released on shutdown; will be redelivered",
-                    record["id"],
-                )
+                # Guarded, because the release can legitimately fail.
+                try:
+                    await asyncio.shield(self._backend.release(record["id"]))
+                    logger.info(
+                        "job %s released on shutdown; will be redelivered",
+                        record["id"],
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning(
+                        "job %s could not be released on shutdown; "
+                        "leaving it to the reaper",
+                        record["id"],
+                        exc_info=True,
+                    )
                 raise
             except Exception:
                 # A poison record (failed deserialize/save) must not kill the
@@ -131,6 +164,19 @@ class Worker:
             done, pending = await asyncio.wait(
                 [cancel_task, job_task], return_when=asyncio.FIRST_COMPLETED
             )
+
+            if (
+                cancel_task in done
+                and job_task not in done
+                and cancel_task.exception() is not None
+            ):
+                logger.warning(
+                    "job %s: cancel watcher failed (%r); running unwatched",
+                    job.id,
+                    cancel_task.exception(),
+                )
+                await job_task
+                done = {job_task}
 
             if job_task in done:
                 job.result = job_task.result()
@@ -182,12 +228,7 @@ class Worker:
         return True
 
     async def _upkeep_loop(self) -> None:
-        """Publish this process's liveness and reclaim leases of dead ones.
-
-        Runs for the pool's whole lifetime, including throughout a drain: a
-        draining worker still holds leases, so it must keep beating or a peer
-        will reclaim jobs that are still running here.
-        """
+        """Publish this process's liveness and reclaim leases of dead ones."""
         while True:
             try:
                 await self._backend.heartbeat()

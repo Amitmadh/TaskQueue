@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
@@ -9,7 +10,7 @@ from TaskQueue.backends.interface import Backend
 from TaskQueue.job import JobStatus
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import Mapping
 
     from redis.typing import EncodableT, FieldT
 
@@ -29,6 +30,7 @@ WORKERS = "workers"
 DEFAULT_RESULT_TTL_SECONDS = 86400
 DEFAULT_WORKER_TTL_SECONDS = 30
 _CLAIM_TIMEOUT_SECONDS = 1
+_NOTIFY_POLL_SECONDS = 5.0
 
 
 def job_key(job_id: str) -> str:
@@ -246,9 +248,19 @@ class RedisBackend(Backend):
             return None
 
         job_id = raw_job_id.decode() if isinstance(raw_job_id, bytes) else raw_job_id
-        flat = await self._claim_script(
-            keys=[job_key(job_id)], args=[JobStatus.RUNNING.value]
-        )
+        try:
+            flat = await self._claim_script(
+                keys=[job_key(job_id)], args=[JobStatus.RUNNING.value]
+            )
+        except Exception:
+            # The lease is already taken.
+            logger.warning("claim failed for job %s; returning it to the queue", job_id)
+            with contextlib.suppress(Exception):
+                async with self.redis.pipeline(transaction=True) as pipe:
+                    pipe.lrem(self._processing_key, 1, job_id)
+                    pipe.rpush(QUEUE, job_id)
+                    await pipe.execute()
+            raise
         if not flat:
             await self.redis.lrem(self._processing_key, 1, job_id)
             logger.warning(
@@ -296,15 +308,14 @@ class RedisBackend(Backend):
         # wait for job to reach a terminal status
         async with self.redis.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
             await pubsub.subscribe(done_channel(job_id))
-            record = await self.get_job(job_id=job_id)
-            if record["status"] not in _TERMINAL:
-                messages = cast(
-                    "AsyncIterator[dict[str, Any]]",
-                    pubsub.listen(),  # pyright: ignore[reportUnknownMemberType]
+            # the record is the truth, the message is only the news.
+            while not await self._is_terminal(job_id):
+                message = cast(
+                    "dict[str, Any] | None",
+                    await pubsub.get_message(timeout=_NOTIFY_POLL_SECONDS),
                 )
-                async for message in messages:
-                    if message["type"] == "message":
-                        break
+                if message is not None and message["type"] == "message":
+                    break
 
         # return the record and remove from queue
         async with self.redis.pipeline(transaction=True) as pipe:
@@ -341,13 +352,26 @@ class RedisBackend(Backend):
                 raise KeyError(f"job {job_id!r} not found")
             if int(flag):
                 return
-            messages = cast(
-                "AsyncIterator[dict[str, Any]]",
-                pubsub.listen(),  # pyright: ignore[reportUnknownMemberType]
-            )
-            async for message in messages:
-                if message["type"] == "message":
+            while not await self._cancel_requested(job_id):
+                message = cast(
+                    "dict[str, Any] | None",
+                    await pubsub.get_message(timeout=_NOTIFY_POLL_SECONDS),
+                )
+                if message is not None and message["type"] == "message":
                     return
+
+    async def _is_terminal(self, job_id: str) -> bool:
+        """Read the job's status. Raises 'KeyError' if the record is gone."""
+        raw = await self.redis.hget(job_key(job_id), "status")
+        if raw is None:
+            raise KeyError(f"job {job_id!r} not found")
+        status = raw.decode() if isinstance(raw, bytes) else raw
+        return status in _TERMINAL
+
+    async def _cancel_requested(self, job_id: str) -> bool:
+        """Read the durable cancel flag. A vanished record reports False."""
+        raw = await self.redis.hget(job_key(job_id), "request_cancel")
+        return raw is not None and bool(int(raw))
 
     async def heartbeat(self) -> None:
         await self._heartbeat_script(keys=[WORKERS], args=[self._instance_id])

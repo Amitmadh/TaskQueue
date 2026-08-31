@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+_CANCEL_DRAIN_TIMEOUT_SECONDS = 30.0
+
+
 class OnError(StrEnum):
     CANCEL_SIBLINGS = "cancel_siblings"
     IGNORE = "ignore"
@@ -33,7 +36,7 @@ class JobGroup:
         self._backend: Backend = backend
         self._on_error: OnError = OnError(on_error)
         self._deadline: float | None = deadline
-        self._deadline_at: float | None = None  # to do
+        self._deadline_at: float | None = None
         self._handles: dict[str, JobHandle[Any]] = {}
         self._waiters: dict[asyncio.Task[Any], JobHandle[Any]] = {}
         self._failures: list[BaseException] = []
@@ -157,7 +160,19 @@ class JobGroup:
         # to reach a terminal state. Errors are swallowed: this is teardown.
         handles = list(self._handles.values())
         await self._backend.request_cancel_many([h.job_id for h in handles])
-        await asyncio.gather(*self._waiters, return_exceptions=True)
+        if not self._waiters:
+            return
+        _, not_cancelled = await asyncio.wait(
+            self._waiters, timeout=_CANCEL_DRAIN_TIMEOUT_SECONDS
+        )
+        if not_cancelled:
+            logger.warning(
+                "group %s: %d child(ren) did not report back within %gs; "
+                "abandoning the wait",
+                self.id,
+                len(not_cancelled),
+                _CANCEL_DRAIN_TIMEOUT_SECONDS,
+            )
 
     async def cancel_siblings_mode(self) -> list[BaseException]:
         # Wait until the first child fails (or all finish). On a failure, cancel the

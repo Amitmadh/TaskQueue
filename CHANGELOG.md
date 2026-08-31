@@ -2,6 +2,164 @@
 
 All notable changes documented here.
 
+## [0.4.0] - 2026-08-30
+
+Phase 4. Cancellation that reliably crosses processes — and the deliberate decision
+**not** to build the other half the roadmap promised. See Cut.
+
+### Added
+
+- **Cross-process cancellation, proven against a real server.** `handle.cancel()` in
+  one process stops a job already running in another: the record reads `cancelled`,
+  `result()` raises `JobCancelled`, and the lease is acked on the way out.
+  `test_cancel_crosses_processes` asserts the job is genuinely in flight over there
+  *before* cancelling, and waits for a marker the job prints from its own
+  `except asyncio.CancelledError` — because a record that *says* cancelled is not the
+  same claim as work that actually stopped. The conformance suite already checked
+  cancellation against fakeredis, which lives inside the test process: that proves the
+  logic and nothing whatever about the transport.
+- **A poll backup behind both pub/sub waits, so a dropped notification costs latency
+  instead of correctness.** Redis pub/sub is fire-and-forget: a connection blip during
+  a long job drops the `PUBLISH` for good, and the durable state then sits unread —
+  `wait_cancel` parked forever on a cancel that was requested, and `take_result`
+  hanging until `result_ttl` deleted the record out from under it and turned a job
+  that *succeeded* into a `KeyError`. Both waits now re-read the record every
+  `_NOTIFY_POLL_SECONDS` (5s): the record is the truth, the message is only the news.
+  Five seconds is a backstop, not a mechanism — one `HGET` per waiting job per
+  interval, forever, against a few seconds of extra latency in a failure that should
+  almost never happen. `test_cancel_crosses_processes_even_when_the_publish_is_lost`
+  proves it across processes, using a cancel script *derived* from the real one with
+  the `PUBLISH` removed, with the derivation asserted so a refactor cannot leave the
+  test quietly checking nothing.
+- **`Job.group_id`** — the scope that spawned a job, on the wire. Written only when
+  populated, read with `.get()`. Nothing consumes it yet: it is the visible difference
+  between a spawn into an entered scope and a deliberate detachment through
+  `root_group()`, it costs one optional field, and `taskqueue inspect` is its natural
+  reader.
+- **`ConfigError` is exported from `TaskQueue`** and lives in `TaskQueue.exceptions`.
+  It used to be private to the CLI, which is no use to anyone constructing a `Worker`
+  themselves — see Changed.
+- **`docs/architecture.md`** — the longer write-up the README has been promising:
+  the record and key space, why every check-then-act is a Lua script, the two-step
+  lease and everything that follows from it, the lock-free reaper and the two
+  orderings that hold it together, subscribe-then-check plus the poll, the
+  cancellation protocol, and a table of what survives which kind of crash.
+- **`tests/test_lease_invariants.py`** — the orderings that make a job recoverable,
+  collected in one place because they are one family and each was written after a real
+  failure of it rather than from a docstring.
+
+### Changed
+
+- **A failure now cancels its siblings immediately, not at the end of the block.** The
+  fan-out is issued from a done-callback on the first failing child's waiter, so
+  cancellation starts while the scope body is still running rather than when it
+  finally reaches the join. A scope that spawns work in a loop no longer lets every
+  remaining sibling start after one has already failed.
+- **`JobGroup.cancel_all_jobs` bounds its drain.** It waited unconditionally for every
+  cancelled child to report back — on a wake-up that a dropped notification can
+  swallow. It now gives up after `_CANCEL_DRAIN_TIMEOUT_SECONDS` (30s) with a warning
+  and lets teardown drop the local tasks. Defence in depth rather than a substitute
+  for the poll above: a hang inside `finally` outlives even `pytest-timeout`, which
+  makes it nastier than the same hang in the join.
+- **`Task.submit(group_id, /, *args, **kwargs)` is the only enqueue.** There is no
+  group-less form, so `JobGroup.spawn` is the front door by signature rather than by
+  convention. The parameter is positional-only and leading because that is the one
+  shape `ParamSpec` allows next to `*args: P.args` — keyword-only would collide with
+  any task that has a parameter of the same name, and trailing positional would be
+  swallowed by `P.args`.
+- **The liveness check moved from the CLI into `Worker.__init__`.** It refused a
+  `heartbeat_interval` too close to the backend's `worker_ttl` only on the CLI path,
+  so `q.worker(...)` could still be talked into a pool configured to have its own
+  running jobs reclaimed by peers. The CLI *lost* its pre-check rather than keeping a
+  second copy — `main` now translates `ConfigError` into exit code 3, because two call
+  sites for one rule is how they drift. Note the boundary: this bounds the
+  configuration only, and a CPU-bound synchronous task can still starve a beat
+  whatever the ratio.
+- **`Worker.__aenter__` now raises if the backend is unreachable**, as a consequence of
+  registering before it claims (see Fixed). It previously started, logged
+  `worker upkeep failed; continuing`, and retried in the background.
+- **README:** "Cross-process cancellation" is ✓ in the comparison table, and there is a
+  new *What survives a crash, and what doesn't* section — the honest boundary now that
+  supervision is cut.
+
+### Fixed
+
+- **A worker could claim a job before it was registered as alive.** `__aenter__`
+  created the claim loops and the upkeep loop as sibling `create_task`s, so the
+  `BLMOVE` was issued before the first `ZADD` and the two round trips raced; measured
+  under load, the claim won by 4–17 ms. `reap` walks expired **members** of the
+  `workers` set and nothing else, so a `SIGKILL` in that window left the job on a
+  processing list no reaper will ever look at: not queued, not owned, never
+  redelivered. `__aenter__` now `await`s one heartbeat before starting anything.
+- **`CancelledError` while joining a scope orphaned every child.** `__aexit__` handled
+  a body that raised and a deadline that passed, but a cancellation arriving while
+  parked in the join propagated with nothing cancelled — and the join is where a scope
+  spends nearly all of its life, so Ctrl-C on a waiting producer left its children
+  running. With supervision cut this stops being a quality fix and becomes the only
+  thing that cancels children when a scope ends badly.
+- **A cancel watcher that *raised* was read as a cancellation.** `asyncio.wait`
+  reports "done" for a task that raised exactly as for one that returned, so a dropped
+  pub/sub connection wrote `cancelled` over work that was still running and threw the
+  result away. The worker now distinguishes them and finishes the job unwatched.
+- **A failed `release` on shutdown swallowed the worker loop's own cancellation.**
+  `release` raises `KeyError` for a record that no longer exists — precisely the state
+  after `take_result` consumed the result — and raised from inside the
+  `except CancelledError` arm it *replaced* the `CancelledError`, so the loop exited by
+  exception and every `gather(..., return_exceptions=True)` collecting it swallowed the
+  error silently. The same applied to a backend that was simply down, which is the
+  usual reason a pool is being torn down at all.
+- **An error between the two halves of a claim kept the lease.** `BLMOVE` takes it;
+  a second round trip marks the record `RUNNING`. A failure there left the id on this
+  worker's processing list still `queued`, and since the worker survives the error and
+  keeps beating, no reaper would ever walk that list. `claim` now returns the id to the
+  queue in one `MULTI` before re-raising.
+- **`Job.from_record` read optional fields by direct indexing**, so a record without
+  `group_id` raised `KeyError` inside the claim path — swallowed by the poison-record
+  handler, leaving a producer waiting forever with nothing in the log to explain it.
+  An absent key means `None`, and `.get()` is the only correct read.
+- **Test scaffolding:** `_read_until` started a fresh reader thread per call, and two
+  readers compete for the same pipe — whichever wins a line owns it, so a marker
+  landing in the other one's queue is lost, which looks exactly like a child that went
+  silent. It had only ever been called once per child, so nothing had caught it. There
+  is now one pump per process. `test_version.py` also gained the check that was missing
+  when the `v0.3.0` tag shipped a tree whose `pyproject.toml` still said `0.0.3`: the
+  packaged version must equal the newest heading in this file.
+
+### Cut
+
+- **Heartbeat-based scope reaping — cancelling a dead producer's children — is
+  removed from Phase 4.** It was fully built and green (381 tests) before being
+  withdrawn, so this is a decision rather than an omission.
+
+  The accepted cost, stated exactly: if a process that spawned jobs is killed outright
+  (`SIGKILL`, OOM, a pulled plug), **its jobs run to completion and their results
+  expire unread.** You pay worker time for work nobody is waiting on. Nothing is lost,
+  nothing is stranded and no keys leak — each orphaned child still frees its own record
+  on its terminal write — and jobs *in flight on a dead worker* are unaffected: that is
+  the Phase 3 lease reaper and it is untouched.
+
+  Three reasons, in increasing weight. It was the worst effort-to-value ratio in the
+  phase: a new key family, a conditional `SADD` inside enqueue's `MULTI`, an `SREM` in
+  the save script, a second reaper walk. A heartbeat can be wrong in the *stale*
+  direction and there was no fencing — demonstrated at runtime against the built
+  version, a worker running a live scope had its own child cancelled by a peer's `reap`
+  while it was alive and serving, because the beat shares an event loop with the jobs
+  and a CPU-bound task starves it. **Cancelling live work is a worse failure than
+  wasting dead work.** And producer liveness has to come from the producer process: a
+  pure producer has no reason to run a beat loop, so giving every scope a background
+  timer taxes every user for a failure mode most never hit.
+
+  `Job.group_id` survives the cut (see Added). `producer_id`, `MemoryBackend.instance_id`
+  and the `workers` → `INSTANCES` rename are all reverted; the Redis key layout is
+  exactly Phase 3's. The withdrawn design is preserved in Appendix A of
+  `reviews/2026-08-23-phase4-elaboration.md` so it is recoverable rather than
+  re-derived.
+
+### Deferred
+
+- **The v0.4 demo GIF** — two panes, a worker running a slow job and a producer that
+  cancels it mid-run. The test exists; the recording does not.
+
 ## [0.3.0] - 2026-08-23
 
 ### Added

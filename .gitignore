@@ -6,3 +6,4 @@ build_plan.md
 .pytest_cache/
 __pycache__/
 dist/
+./reviews

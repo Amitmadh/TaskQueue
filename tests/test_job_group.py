@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from TaskQueue import job_group
 from TaskQueue.job import JobStatus
 from TaskQueue.queue import Queue
 
@@ -421,3 +422,33 @@ async def test_deadline_cancels_the_scope(queue: Queue) -> None:
                 h = await g.spawn(blocker)
         assert h is not None
         assert await h.status() == JobStatus.CANCELLED
+
+
+async def test_teardown_does_not_hang_on_a_wake_that_never_arrives(
+    queue: Queue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dropped notification must not turn a deadline into a permanent hang.
+
+    Teardown waits for every cancelled child to reach a terminal state -- that
+    wait is the scope's promise. But it rides on a wake-up, and pub/sub can
+    drop one, in which case the child is already finished and only the news is
+    missing. An unbounded wait would move the hang from the join into the
+    teardown and never come back.
+    """
+    monkeypatch.setattr(job_group, "_CANCEL_DRAIN_TIMEOUT_SECONDS", 0.2)
+
+    @queue.task
+    async def slow() -> int:
+        await asyncio.sleep(30)
+        return 1
+
+    async def never_wakes(job_id: str) -> dict[str, object]:
+        await asyncio.Event().wait()  # the notification that never comes
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(queue.backend, "take_result", never_wakes)
+
+    async with queue.worker():
+        with pytest.raises(TimeoutError):
+            async with queue.group(deadline=0.2) as g:
+                await g.spawn(slow)

@@ -15,6 +15,7 @@ import fakeredis
 import pytest
 import redis.asyncio.client as redis_client_module
 
+from TaskQueue.backends import redis_backend as backend_module
 from TaskQueue.backends.redis_backend import (
     DEFAULT_RESULT_TTL_SECONDS,
     QUEUE,
@@ -290,6 +291,30 @@ async def test_a_publish_with_no_subscriber_is_not_replayed(
 
     record = await asyncio.wait_for(redis_backend.take_result(job.id), timeout=1)
     assert Job.from_record(record, serializer).result == "early"
+
+
+async def test_take_result_wakes_from_the_status_when_the_publish_is_lost(
+    redis_backend: RedisBackend,
+    serializer: Serializer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The terminal record is written straight to the hash, so no message is ever
+    # published -- what a dropped PUBLISH looks like from the waiter's side.
+    # Redis pub/sub is fire-and-forget, so only the poll can end this wait.
+    monkeypatch.setattr(backend_module, "_NOTIFY_POLL_SECONDS", 0.1)
+    job = await _enqueue(redis_backend, serializer)
+    waiter = asyncio.create_task(redis_backend.take_result(job.id))
+    await asyncio.sleep(0.02)
+    assert not waiter.done()
+
+    job.status = JobStatus.COMPLETED
+    job.result = "late"
+    await redis_backend.redis.hset(  # type: ignore[misc]
+        job_key(job.id), mapping=job.to_record(serializer)
+    )
+
+    record = await asyncio.wait_for(waiter, timeout=2)
+    assert Job.from_record(record, serializer).result == "late"
 
 
 async def test_enqueue_stores_the_record_and_makes_it_claimable(
@@ -682,6 +707,51 @@ async def test_wait_cancel_of_an_unknown_job_raises(
 ) -> None:
     with pytest.raises(KeyError):
         await asyncio.wait_for(redis_backend.wait_cancel("nope"), timeout=1)
+
+
+async def test_wait_cancel_wakes_from_the_flag_when_the_publish_is_lost(
+    redis_backend: RedisBackend,
+    serializer: Serializer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The flag is set without going through request_cancel, so nothing is ever
+    # published. The record is the truth and the message is only the news, so
+    # the poll has to re-read the flag or this waiter never wakes.
+    monkeypatch.setattr(backend_module, "_NOTIFY_POLL_SECONDS", 0.1)
+    job = await _enqueue(redis_backend, serializer)
+    await redis_backend.claim()
+    waiter = asyncio.create_task(redis_backend.wait_cancel(job.id))
+    await asyncio.sleep(0.02)
+    assert not waiter.done()
+
+    await redis_backend.redis.hset(job_key(job.id), "request_cancel", "1")  # type: ignore[misc]
+
+    await asyncio.wait_for(waiter, timeout=2)
+
+
+async def test_wait_cancel_keeps_waiting_when_the_record_disappears(
+    redis_backend: RedisBackend,
+    serializer: Serializer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A vanished record means the job FINISHED -- its result was taken, or the
+    # TTL reaped it -- not that it was cancelled. Worker._process reads any
+    # return from wait_cancel as a cancellation, so the poll must stay silent
+    # here rather than mark a job CANCELLED that nobody cancelled. Waiting on is
+    # safe: the worker cancels this task itself once the job settles.
+    monkeypatch.setattr(backend_module, "_NOTIFY_POLL_SECONDS", 0.05)
+    job = await _enqueue(redis_backend, serializer)
+    await redis_backend.claim()
+    waiter = asyncio.create_task(redis_backend.wait_cancel(job.id))
+    await asyncio.sleep(0.02)
+
+    await redis_backend.redis.delete(job_key(job.id))
+    await asyncio.sleep(0.3)  # several poll intervals
+
+    assert not waiter.done()
+    waiter.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await waiter
 
 
 async def test_request_cancel_many_flags_every_job(

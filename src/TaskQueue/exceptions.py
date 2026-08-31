@@ -4,3 +4,7 @@ class JobCancelled(Exception):
 
 class TaskNameError(RuntimeError):
     """A task name is unusable as a wire identifier."""
+
+
+class ConfigError(Exception):
+    """Settings that would misbehave at runtime, refused at construction."""
