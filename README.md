@@ -246,8 +246,7 @@ Everything we got wrong is ours alone.
 
 ## How this was built
 
-Developed with Claude for tests, code review, and the written material: documentation,
-code comments, and the changelog. The architecture and the design decisions are my own.
+Developed with Claude for tests, code review, and the written material: documentation, and the changelog. The code, architecture and the design decisions are my own.
 
 ## License
 
