@@ -7,6 +7,10 @@
 
 **A Python task queue built around structured concurrency and end-to-end type safety.** Jobs have parent-child relationships, failures cancel siblings instead of orphaning them, and the type checker catches signature mismatches at `spawn()` call sites. Redis for production and an in-memory backend for tests and single-process use, behind the same API; SQLite is planned.
 
+![A checkout run twice. The first goes through; the second is declined half a second in, and the scope cancels the two checks that are still running instead of letting them finish.](docs/media/nested_scopes_cancel_on_failure.gif)
+
+<sub>`examples/nested_scopes_cancel_on_failure.py` — run 1 fans three checks out into one scope and waits for all of them; run 2 fails fast, and the wall clock is the point.</sub>
+
 > **Status:** pre-alpha, in active development. The API is still moving — see the roadmap below.
 
 ---
@@ -68,7 +72,13 @@ async with q.group() as g:
     await g.spawn(work, "three")        # Pyright: Argument of type "str" cannot be assigned to "int"
 ```
 
+The same class of mistake, caught in the editor rather than at runtime:
+
+![An editor showing a spawn call passing the string "twelve" where an int is required, with the type checker reporting that Literal['twelve'] is not assignable to parameter "incoming" of type "int".](docs/media/type_hints.png)
+
 When fail-fast isn't what you want: `group(on_error="collect")` runs every job and raises a `BaseExceptionGroup` of all failures, and `group(deadline=5.0)` cancels the whole scope if it outruns its deadline.
+
+Each of these behaviours — fan-out, fail-fast, explicit cancellation, deadlines, `on_error="collect"` — has a runnable version in [`examples/`](examples/), alongside demonstrations of cross-process cancellation and of a worker killed mid-job while a peer reclaims its work. [`examples/README.md`](examples/README.md) maps the five scripts and says which of them need a running Redis.
 
 ## Running a worker
 
@@ -132,6 +142,10 @@ mistake, and it is the one this library makes.
 
 Jobs that were *in flight on a dead worker* are a different matter, and those are
 reclaimed — that is the reaper, described above.
+
+![Two workers packing an order each. One is killed outright; its heartbeat goes silent, the surviving worker reaps the lease, and the order is requeued and packed on a second attempt.](docs/media/worker_crash_job_reclaimed.gif)
+
+<sub>`examples/worker_crash_job_reclaimed.py` — watch worker A's beat go stale, its lease return to the queue, and `attempts` for that order go from 1 to 2. Nothing re-submits it by hand.</sub>
 
 ## Comparison with existing queues
 

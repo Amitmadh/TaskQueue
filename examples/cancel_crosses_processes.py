@@ -1,5 +1,8 @@
 """Cancel a job from here; it stops mid-run in a worker process over there.
 
+The store's catalogue reprice: one long job, started here and running on a
+worker somewhere else, called off from this process halfway through.
+
 Two acts. The first is the ordinary path: `handle.cancel()` writes a flag and
 publishes, the worker's watcher wakes, and the job stops. The second removes the
 message — the flag is set by hand and nothing is published, which is what a
@@ -11,7 +14,7 @@ Self-contained: the worker subprocess imports THIS module (see TARGET), so the
 task registry and namespace used here cannot leak into the other examples.
 
 Run a real Redis first:  docker run --rm -p 6379:6379 redis
-Then:                    python examples/cancel_crosses_processes.py
+Then:                    uv run python examples/cancel_crosses_processes.py
 """
 
 # redis-py annotates most client methods with '**kwargs: Unknown', so under a
@@ -53,22 +56,22 @@ client = redis.Redis(host="localhost", port=6379)
 
 q = Queue(
     backend=RedisBackend(client),
-    namespace="cancel_demo",
+    namespace="catalog",
 )
 
 
 @q.task
-async def slow_job(seconds: float) -> str:
+async def reprice_catalog(seconds: float) -> str:
     """Runs in the WORKER process. Its prints are the proof the work stopped."""
-    say(f"worker  | job started in pid {os.getpid()}; sleeping {seconds:g}s")
+    say(f"worker  | reprice started in pid {os.getpid()}; sleeping {seconds:g}s")
     try:
         await asyncio.sleep(seconds)
     except asyncio.CancelledError:
         # A record that SAYS cancelled is a weaker claim than work that stopped.
         # This line is the strong one, and it is printed from the other process.
-        say(f"worker  | job CANCELLED mid-run in pid {os.getpid()}; unwinding")
+        say(f"worker  | reprice CANCELLED mid-run in pid {os.getpid()}; unwinding")
         raise
-    return "finished (nobody stopped me)"
+    return "repriced the whole catalogue (nobody stopped me)"
 
 
 # Both processes stamp their lines against the same epoch, so the interleaved
@@ -168,7 +171,7 @@ async def act_one() -> None:
     # joins its children, and a child that ends CANCELLED is a scope failure —
     # correct behaviour, but it would raise a BaseExceptionGroup here and bury
     # the one thing this act is about.
-    handle = await q.root_group().spawn(slow_job, JOB_SECONDS)
+    handle = await q.root_group().spawn(reprice_catalog, JOB_SECONDS)
     say(f"producer| spawned job {handle.job_id[:8]} (would run for {JOB_SECONDS}s)")
 
     await until_running(handle)
@@ -193,7 +196,7 @@ async def act_one() -> None:
 
 async def act_two() -> None:
     say("--- act 2: the same thing, with the message thrown away -------------")
-    handle = await q.root_group().spawn(slow_job, JOB_SECONDS)
+    handle = await q.root_group().spawn(reprice_catalog, JOB_SECONDS)
     say(f"producer| spawned job {handle.job_id[:8]}")
 
     await until_running(handle)
@@ -233,7 +236,7 @@ async def main() -> None:
         print()
         await act_two()
         print()
-        say("both jobs stopped in the worker process -- once by message, once by poll")
+        say("both reprices stopped in the worker process -- by message, then by poll")
     finally:
         worker.kill()
         worker.wait()

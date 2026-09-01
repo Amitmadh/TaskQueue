@@ -202,7 +202,7 @@ with a poll backup so a dropped notification costs latency rather than correctne
   `serving N task(s): myapp.add, myapp.fetch` before accepting work — the exact strings
   that process can resolve a job back to, so a producer/worker name mismatch is one
   glance away instead of a job that quietly never runs.
-- **`examples/demo.py`** — the six scenarios (round-trip, fan-out, fail-fast, explicit
+- **`examples/scope_semantics_tour.py`** — the six scenarios (round-trip, fan-out, fail-fast, explicit
   cancellation, scope deadline, `on_error="collect"`) end to end in one process.
 - **`RedisBackend` — the whole `Backend` Protocol, against real Redis.** A hash per job,
   `BLMOVE` from `queue` into a per-worker `processing:{consumer_id}` list, pub/sub for

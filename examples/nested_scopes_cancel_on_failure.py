@@ -1,10 +1,11 @@
 """A checkout, run twice: once it goes through, once the card is declined.
 
-The Redis twin of ``examples/demo.py``. Same scope code, same task decorator —
-the only difference is the backend on line one of the setup, which is the whole
-claim of the ``Backend`` Protocol. The worker pool runs in this process for the
-sake of a single command; point ``taskqueue worker main:q`` at the same Redis
-from another terminal and the producer code below does not change at all.
+The Redis twin of ``examples/scope_semantics_tour.py``. Same scope code, same
+task decorator — the only difference is the backend on line one of the setup,
+which is the whole claim of the ``Backend`` Protocol. The worker pool runs in
+this process for the sake of a single command; point
+``taskqueue worker nested_scopes_cancel_on_failure:q`` at the same Redis from
+another terminal and the producer code below does not change at all.
 
 What each run is here to show:
 
@@ -37,7 +38,7 @@ is run as a script or imported by a worker, and keeps them from colliding with
 the other examples on a shared Redis.
 
 Run a real Redis first:  docker run --rm -p 6379:6379 redis
-Then:                    python examples/main.py
+Then:                    uv run python examples/nested_scopes_cancel_on_failure.py
 """
 
 import asyncio
@@ -62,7 +63,7 @@ LOOKUP_SECONDS = 3.0
 CARD_LIMIT = 2000.0
 
 # One job each, spawned by check_inventory rather than by this file.
-STOCK = {"Haifa": 4, "Ashdod": 11, "Modiin": 2}
+STOCK = {"New York City": 4, "Los Angeles": 11, "Chicago": 2}
 
 # Three outer checks + three warehouse jobs, all live at the same instant.
 CONCURRENCY = 6

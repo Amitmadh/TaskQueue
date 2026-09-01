@@ -329,7 +329,7 @@ Two things to know before relying on it.
 
 **A parent occupies a worker slot for the whole time it waits on its children.**
 That makes pool width a correctness constraint rather than a throughput knob.
-Measured against `examples/main.py`, which has three outer checks, one of which
+Measured against `examples/nested_scopes_cancel_on_failure.py`, which has three outer checks, one of which
 spawns three warehouse jobs:
 
 | `concurrency` | outcome |
