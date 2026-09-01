@@ -38,6 +38,37 @@ async def redis_backend() -> RedisBackend:
     return RedisBackend(client)
 
 
+class _SubscribeCancels:
+    """A pubsub whose 'subscribe' is cancelled, as one can be in real life."""
+
+    async def subscribe(self, *channels: str) -> None:
+        raise asyncio.CancelledError
+
+    async def unsubscribe(self, *channels: str) -> None:  # pragma: no cover
+        return None
+
+    async def aclose(self) -> None:  # pragma: no cover
+        return None
+
+
+async def test_a_cancelled_subscribe_leaves_no_channel_behind(
+    redis_backend: RedisBackend,
+) -> None:
+    """'join' registers its watcher before subscribing.
+
+    Cancelled on that await, the caller gets no event and never calls 'leave',
+    so the channel is stranded. Provoked directly here because the race itself
+    only stranded one run in three of a 60-job fan-out.
+    """
+    notifier = redis_backend._notifier
+    notifier._pubsub = _SubscribeCancels()
+
+    with pytest.raises(asyncio.CancelledError):
+        await notifier.join("done:whatever")
+
+    assert notifier._waiters == {}
+
+
 async def _enqueue(be: RedisBackend, serializer: Serializer, **kw: object) -> Job:
     job = Job(task_name=str(kw.pop("task_name", "t")), **kw)  # type: ignore[arg-type]
     await be.enqueue(job.id, job.to_record(serializer))
@@ -283,7 +314,7 @@ async def test_a_publish_with_no_subscriber_is_not_replayed(
     redis_backend: RedisBackend, serializer: Serializer
 ) -> None:
     # Guards the subscribe-then-check ordering. The PUBLISH here reaches nobody
-    # and Redis drops it — unlike an asyncio.Event, which would stay set. If
+    # and Redis drops it, unlike an asyncio.Event, which would stay set. If
     # take_result checked the status before subscribing, a job finishing in that
     # gap would leave it waiting for a message that never comes again.
     job = await _enqueue(redis_backend, serializer)
@@ -715,8 +746,9 @@ async def test_wait_cancel_wakes_from_the_flag_when_the_publish_is_lost(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The flag is set without going through request_cancel, so nothing is ever
-    # published. The record is the truth and the message is only the news, so
-    # the poll has to re-read the flag or this waiter never wakes.
+    # published. The stored record is authoritative and the message only says
+    # that something changed, so the poll has to re-read the flag or this
+    # waiter never wakes.
     monkeypatch.setattr(backend_module, "_NOTIFY_POLL_SECONDS", 0.1)
     job = await _enqueue(redis_backend, serializer)
     await redis_backend.claim()

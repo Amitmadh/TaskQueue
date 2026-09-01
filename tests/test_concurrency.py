@@ -10,6 +10,7 @@ rather than flaky.
 
 import asyncio
 from collections import Counter
+from collections.abc import Awaitable, Callable
 
 import pytest
 
@@ -134,7 +135,9 @@ async def test_concurrent_submitters_all_land(queue: Queue) -> None:
 
 @pytest.mark.slow
 @pytest.mark.timeout(30)
-async def test_throughput_under_load(queue: Queue) -> None:
+async def test_throughput_under_load(
+    queue: Queue, assert_backend_clean: Callable[..., Awaitable[None]]
+) -> None:
     @queue.task
     async def square(n: int) -> int:
         return n * n
@@ -145,3 +148,4 @@ async def test_throughput_under_load(queue: Queue) -> None:
         results = [await asyncio.wait_for(h.result(), 10) for h in handles]
 
     assert results == [i * i for i in range(500)]
+    await assert_backend_clean(queue.backend)

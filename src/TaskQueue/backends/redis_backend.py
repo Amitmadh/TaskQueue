@@ -48,6 +48,14 @@ def cancel_channel(job_id: str) -> str:
     return f"cancel:{job_id}"
 
 
+def _flatten(record: dict[str, str | bytes]) -> list[str | bytes]:
+    """A record as an alternating field/value list, for HSET's varargs."""
+    flattened: list[str | bytes] = []
+    for field, value in record.items():
+        flattened.extend([field, value])
+    return flattened
+
+
 _TERMINAL_LUA = (
     "{" + ", ".join(f"{status} = true" for status in sorted(_TERMINAL)) + "}"
 )
@@ -158,7 +166,7 @@ local processing = KEYS[2]
 local worker = ARGV[1]
 
 -- The liveness entry is the only pointer to this worker's processing list.
--- Dropping it while leases remain would hide them from every future reaper.
+-- Dropping it while leases remain would hide them from later reapers.
 if redis.call('LLEN', processing) > 0 then
     return 0
 end
@@ -205,6 +213,99 @@ return {reclaimed, dropped}
 """
 
 
+async def _wait_for_message(woken: asyncio.Event, timeout: float) -> None:
+    """Wait for the next message on a watched channel, or for the poll to lapse."""
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(woken.wait(), timeout)
+    woken.clear()
+
+
+class _Notifier:
+    """One pubsub connection shared by every waiter on this backend.
+    Lives only while somebody is waiting.
+    """
+
+    def __init__(self, client: redis.Redis) -> None:
+        self._redis = client
+        self._lock = asyncio.Lock()
+        self._waiters: dict[str, set[asyncio.Event]] = {}
+        self._pubsub: Any = None
+        self._reader: asyncio.Task[None] | None = None
+
+    async def join(self, channel: str) -> asyncio.Event:
+        """Subscribe to 'channel'; the event is set on every message it carries."""
+        woken = asyncio.Event()
+        async with self._lock:
+            if self._pubsub is None:
+                self._pubsub = self._redis.pubsub()  # pyright: ignore[reportUnknownMemberType]
+            watchers = self._waiters.setdefault(channel, set())
+            watchers.add(woken)
+            if len(watchers) == 1:
+                try:
+                    await self._pubsub.subscribe(channel)
+                except BaseException:
+                    self._forget(channel, woken)
+                    raise
+            if self._reader is None:
+                self._reader = asyncio.create_task(self._read())
+        return woken
+
+    def _forget(self, channel: str, woken: asyncio.Event) -> None:
+        """Drop one watcher, and the channel with it once it has none."""
+        watchers = self._waiters.get(channel)
+        if watchers is None:
+            return
+        watchers.discard(woken)
+        if not watchers:
+            del self._waiters[channel]
+
+    async def leave(self, channel: str, woken: asyncio.Event) -> None:
+        """Release a watcher, completing even if its caller is being cancelled."""
+
+        async def release() -> None:
+            async with self._lock:
+                self._forget(channel, woken)
+                if channel in self._waiters:
+                    return
+                if self._waiters:
+                    with contextlib.suppress(Exception):
+                        await self._pubsub.unsubscribe(channel)
+                    return
+                reader, self._reader = self._reader, None
+                pubsub, self._pubsub = self._pubsub, None
+            if reader is not None:
+                reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reader
+            with contextlib.suppress(Exception):
+                await pubsub.aclose()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(release())
+
+    async def _read(self) -> None:
+        while (pubsub := self._pubsub) is not None:
+            try:
+                message = cast(
+                    "dict[str, Any] | None",
+                    await pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=1.0
+                    ),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("pubsub reader stopped", exc_info=True)
+                return
+            if message is None:
+                continue
+            raw = cast("bytes | str", message["channel"])
+            for event in self._waiters.get(
+                raw.decode() if isinstance(raw, bytes) else raw, ()
+            ):
+                event.set()
+
+
 class RedisBackend(Backend):
     _BLOBS = {"payload", "result"}
 
@@ -217,9 +318,9 @@ class RedisBackend(Backend):
         self.redis: redis.Redis = redis_client
         self._instance_id: str = uuid4().hex
         if result_ttl <= 0:
-            raise ValueError(f"result_ttl (={result_ttl}) need to be greater than 0")
+            raise ValueError(f"result_ttl (={result_ttl}) must be greater than 0")
         if worker_ttl <= 0:
-            raise ValueError(f"worker_ttl (={worker_ttl}) need to be greater than 0")
+            raise ValueError(f"worker_ttl (={worker_ttl}) must be greater than 0")
         self._result_ttl: int = result_ttl
         self._worker_ttl: int = worker_ttl
         self._enqueue_script = redis_client.register_script(_ENQUEUE_SCRIPT)
@@ -234,6 +335,7 @@ class RedisBackend(Backend):
         self._deregister_script = redis_client.register_script(_DEREGISTER_SCRIPT)
 
         self._processing_key: str = processing_key(self._instance_id)
+        self._notifier = _Notifier(redis_client)
 
     @property
     def result_ttl(self) -> int:
@@ -257,12 +359,8 @@ class RedisBackend(Backend):
 
     async def enqueue(self, job_id: str, record: dict[str, str | bytes]) -> None:
         record["status"] = JobStatus.QUEUED.value
-        flattened: list[str | bytes] = []
-        for field, value in record.items():
-            flattened.extend([field, value])
-
         created = await self._enqueue_script(
-            keys=[job_key(job_id), QUEUE], args=[job_id, *flattened]
+            keys=[job_key(job_id), QUEUE], args=[job_id, *_flatten(record)]
         )
         if created == 0:
             logger.debug("enqueue of job %s ignored: already known", job_id)
@@ -311,13 +409,9 @@ class RedisBackend(Backend):
     async def save(
         self, job_id: str, record: dict[str, str | bytes], *, done: bool = False
     ) -> None:
-        flattened_record: list[str | bytes] = []
-        for field, value in record.items():
-            flattened_record.extend([field, value])
-
         return_value = await self._save_script(
             keys=[job_key(job_id), self._processing_key, done_channel(job_id)],
-            args=["1" if done else "0", job_id, self._result_ttl, *flattened_record],
+            args=["1" if done else "0", job_id, self._result_ttl, *_flatten(record)],
         )
         if return_value == 0:
             raise KeyError(f"job {job_id!r} not found")
@@ -335,17 +429,16 @@ class RedisBackend(Backend):
 
     async def take_result(self, job_id: str) -> dict[str, str | bytes]:
         key = job_key(job_id)
-        # wait for job to reach a terminal status
-        async with self.redis.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
-            await pubsub.subscribe(done_channel(job_id))
-            # the record is the truth, the message is only the news.
+        # Subscribe before the first read, or a publish landing in between is
+        # missed. The stored record is authoritative and the message only says
+        # that something changed, so every wake re-reads the record.
+        channel = done_channel(job_id)
+        woken = await self._notifier.join(channel)
+        try:
             while not await self._is_terminal(job_id):
-                message = cast(
-                    "dict[str, Any] | None",
-                    await pubsub.get_message(timeout=_NOTIFY_POLL_SECONDS),
-                )
-                if message is not None and message["type"] == "message":
-                    break
+                await _wait_for_message(woken, _NOTIFY_POLL_SECONDS)
+        finally:
+            await self._notifier.leave(channel, woken)
 
         # return the record and remove from queue
         async with self.redis.pipeline(transaction=True) as pipe:
@@ -375,20 +468,18 @@ class RedisBackend(Backend):
             await pipe.execute()
 
     async def wait_cancel(self, job_id: str) -> None:
-        async with self.redis.pubsub() as pubsub:  # pyright: ignore[reportUnknownMemberType]
-            await pubsub.subscribe(cancel_channel(job_id))
+        channel = cancel_channel(job_id)
+        woken = await self._notifier.join(channel)
+        try:
             flag = await self.redis.hget(job_key(job_id), "request_cancel")
             if flag is None:
                 raise KeyError(f"job {job_id!r} not found")
             if int(flag):
                 return
             while not await self._cancel_requested(job_id):
-                message = cast(
-                    "dict[str, Any] | None",
-                    await pubsub.get_message(timeout=_NOTIFY_POLL_SECONDS),
-                )
-                if message is not None and message["type"] == "message":
-                    return
+                await _wait_for_message(woken, _NOTIFY_POLL_SECONDS)
+        finally:
+            await self._notifier.leave(channel, woken)
 
     async def _is_terminal(self, job_id: str) -> bool:
         """Read the job's status. Raises 'KeyError' if the record is gone."""

@@ -1,4 +1,4 @@
-"""Base tests — the library exercised the way a user (and CI) runs it.
+"""Base tests: the library exercised the way a user (and CI) runs it.
 
 These drive the *public* API only (`from TaskQueue import ...`): define tasks
 with the decorator, run a worker as an async context manager, submit work, and
@@ -22,7 +22,7 @@ import textwrap
 import threading
 import time
 from collections import Counter
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import NoReturn
 
 import pytest
@@ -256,7 +256,7 @@ def test_full_stack_in_a_fresh_process() -> None:
 
 
 async def test_concurrency_is_bounded_and_reached() -> None:
-    """The worker runs at most `concurrency` jobs at once — and reaches it."""
+    """The worker runs at most `concurrency` jobs at once, and reaches it."""
     q = Queue(backend=MemoryBackend())
     state = {"current": 0, "peak": 0}
 
@@ -279,24 +279,27 @@ async def test_concurrency_is_bounded_and_reached() -> None:
     assert state["peak"] == 4  # bounded by, and reaches, the configured limit
 
 
-async def test_every_job_runs_exactly_once_under_load() -> None:
-    q = Queue(backend=MemoryBackend())
+async def test_every_job_runs_exactly_once_under_load(
+    queue: Queue, assert_backend_clean: Callable[..., Awaitable[None]]
+) -> None:
+    """Exactly once holds while nothing dies; at-least-once is the weaker
+    promise that survives a crash, and no worker is killed here."""
     runs: Counter[int] = Counter()
 
-    @q.task
+    @queue.task
     async def mark(n: int) -> int:
         runs[n] += 1
         return n
 
-    scope = q.root_group()
-    async with q.worker(concurrency=8):
+    scope = queue.root_group()
+    async with queue.worker(concurrency=8):
+        # Spawned before any result is read, so the queue really is loaded.
         handles = [await scope.spawn(mark, i) for i in range(100)]
-        results = await asyncio.wait_for(
-            asyncio.gather(*(h.result() for h in handles)), 10
-        )
+        results = [await asyncio.wait_for(h.result(), 10) for h in handles]
 
     assert sorted(results) == list(range(100))  # nothing dropped
     assert all(runs[i] == 1 for i in range(100))  # nothing run twice
+    await assert_backend_clean(queue.backend)  # and nothing left behind
 
 
 _CONCURRENCY_PROGRAM = textwrap.dedent(
@@ -476,7 +479,7 @@ def _spawn_worker(program: str, *args: str) -> subprocess.Popen[str]:
 
 
 def _pump(process: subprocess.Popen[str]) -> queue.Queue[str | None]:
-    """The child's output, one line per item, read by ONE thread per child.
+    """The child's output, one line per item, read by one thread per child.
 
     A reader thread is the portable way to put a deadline on this: `readline`
     on a pipe blocks with no timeout, so a child that starts but never speaks
@@ -485,9 +488,9 @@ def _pump(process: subprocess.Popen[str]) -> queue.Queue[str | None]:
     It has to be exactly one thread, and it has to outlive the call that
     started it. A second reader competes with the first for the same pipe:
     whichever thread wins a line owns it, and a marker that lands in the other
-    one's queue is simply lost — which looks from the test like a child that
-    went silent. Started lazily and cached on the process, so a test that waits
-    for several markers in turn keeps reading the same stream.
+    one's queue is lost, which looks from the test like a child that went
+    silent. Started lazily and cached on the process, so a test that waits for
+    several markers in turn keeps reading the same stream.
     """
     lines: queue.Queue[str | None] | None = getattr(process, "_tq_lines", None)
     if lines is not None:
@@ -548,6 +551,34 @@ def _read_until(
 
 @pytest.mark.slow
 @pytest.mark.timeout(90)
+async def test_many_waiters_do_not_each_hold_a_connection(redis_url: str) -> None:
+    """Waiting on a result must not cost a connection for the length of the wait.
+
+    Sixty waiters fit in a pool of eight only because they share one pubsub. A
+    waiter that goes back to holding its own deadlocks here rather than slowing.
+    """
+    pool = redis.BlockingConnectionPool.from_url(
+        redis_url, max_connections=8, timeout=10
+    )
+    client = redis.Redis(connection_pool=pool)
+    q = Queue(backend=RedisBackend(client), namespace="sharedwait")
+
+    @q.task
+    async def mark(n: int) -> int:
+        return n
+
+    try:
+        scope = q.root_group()
+        async with q.worker(concurrency=4):
+            handles = [await scope.spawn(mark, i) for i in range(60)]
+            results = await asyncio.wait_for(
+                asyncio.gather(*(h.result() for h in handles)), 30
+            )
+        assert sorted(results) == list(range(60))
+    finally:
+        await client.aclose()
+
+
 async def test_job_reclaimed_after_worker_crash(redis_url: str) -> None:
     """A SIGKILLed worker's in-flight job is reclaimed and completed elsewhere.
 
@@ -606,10 +637,10 @@ async def _await_cancel_subscription(
 ) -> None:
     """Block until the worker's 'wait_cancel' subscription is live on the server.
 
-    'wait_cancel' subscribes, reads 'request_cancel' ONCE, and only then parks.
+    'wait_cancel' subscribes, reads 'request_cancel' once, and only then parks.
     The job starts running during that subscribe round trip -- the task body and
     the watcher are sibling tasks -- so a test that fires as soon as it sees the
-    job start can land its flag BEFORE that one-shot read and be answered by it.
+    job start can land its flag before that one-shot read and be answered by it.
     Both tests below would still pass, while silently exercising neither the
     PUBLISH nor the poll. 'PUBSUB NUMSUB' is the server saying the subscription
     exists; the short settle after it covers the one await between 'subscribe'
@@ -672,10 +703,9 @@ async def test_cancel_crosses_processes(redis_url: str) -> None:
 
     The conformance suite proves cancellation against fakeredis, which lives
     inside the test process: it checks the logic and nothing about the
-    transport. This checks the transport — 'HSET request_cancel' + 'PUBLISH
+    transport. This checks the transport: 'HSET request_cancel' + 'PUBLISH
     cancel:{id}' written by one process and picked up by a 'wait_cancel'
-    subscription in another — which is the half fakeredis cannot speak to, and
-    with supervision cut it is the whole of what Phase 4 promises.
+    subscription in another, which is the half fakeredis cannot speak to.
 
     Three separate claims, in order: the job is really running over there, the
     cancel reaches it, and the work itself stops rather than merely being
@@ -732,11 +762,11 @@ async def test_cancel_crosses_processes_even_when_the_publish_is_lost(
     Redis pub/sub is fire-and-forget: a blip between the PUBLISH and the
     worker's subscription drops that wake-up for good, and the flag then sits
     unread. 'wait_cancel' re-reads it every '_NOTIFY_POLL_SECONDS' for exactly
-    this reason. 'test_redis_backend.py' pins that behaviour against fakeredis
-    — inside one process, where a message cannot be sent over a socket and fail
-    to arrive — so this is the half of §3.3 that only two processes can show.
+    this reason. 'test_redis_backend.py' pins that behaviour against fakeredis,
+    inside one process, where a message cannot be sent over a socket and fail
+    to arrive, so this is the half of §3.3 that only two processes can show.
 
-    The mutilated script is DERIVED from the real one rather than copied, and
+    The mutilated script is derived from the real one rather than copied, and
     the derivation is asserted: a refactor that moves the PUBLISH cannot leave
     this quietly testing nothing.
     """
