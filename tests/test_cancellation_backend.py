@@ -1,8 +1,8 @@
-"""Phase 2 backend cancellation primitives — the executable spec for cancel.
+"""Backend cancellation primitives: the executable spec for cancel.
 
 Adds two methods to the Phase 1 Backend contract:
   request_cancel(job_id) : flag a job for cancellation (idempotent). The signal
-                           must be observable on the stored record AND wake any
+                           must be observable on the stored record and wake any
                            wait_cancel() waiter.
   wait_cancel(job_id)    : block until the job is flagged; return immediately if
                            it already is.
@@ -89,8 +89,8 @@ async def test_request_cancel_is_idempotent(serializer: Serializer) -> None:
 # the cancel signal must be observable on the record (not only in-memory)      #
 # --------------------------------------------------------------------------- #
 async def test_request_cancel_persists_to_record(serializer: Serializer) -> None:
-    # guards #4: request_cancel sets record["request_cancel"] = "1", not just an
-    # asyncio.Event — otherwise status()/another process could never see it.
+    # guards #4: request_cancel sets record["request_cancel"] = "1" as well as
+    # an asyncio.Event; otherwise status() or another process could not see it.
     be = MemoryBackend()
     job = await _enqueue(be, serializer)
     assert (await be.get_job(job.id))["request_cancel"] == "0"
@@ -201,7 +201,7 @@ async def test_request_cancel_many_tolerates_terminal_and_unknown(
 ) -> None:
     # A batch may mix a live job, an already-finished job, and an id that never
     # existed: the live one is flagged, completion wins for the finished one, and
-    # the unknown id is a silent no-op — none of them raise.
+    # the unknown id is a silent no-op. None of them raise.
     be = MemoryBackend()
     live = await _enqueue(be, serializer)
     finished = await _enqueue(be, serializer)

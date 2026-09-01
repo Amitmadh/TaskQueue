@@ -86,7 +86,7 @@ class Queue:
             task_name = name or self._derive_name(f)
             if task_name in self._task_registry:
                 # Rebinding a name silently would point jobs already queued
-                # under it at different code, so this is an error, not a warning.
+                # under it at different code, so the decorator refuses.
                 raise TaskNameError(
                     f"task {task_name!r} is already registered on this queue: "
                     f"Give one an explicit name (@q.task(name=...))."
@@ -123,10 +123,10 @@ class Queue:
     ) -> JobGroup:
         """Open a structured-concurrency scope, entered with 'async with'.
 
-        The block does not exit until every job spawned into the scope reaches a
-        terminal state. a group opened inside another is
-        effectively its child, since the outer 'async with' cannot exit until
-        the inner one has.
+        The block does not exit until every job spawned into the scope reaches
+        a terminal state. A group opened inside another is effectively its
+        child, since the outer 'async with' cannot exit until the inner one
+        has.
         """
         return JobGroup(self._backend, on_error=on_error, deadline=deadline)
 
@@ -136,12 +136,11 @@ class Queue:
         on_error: OnError | str = OnError.CANCEL_SIBLINGS,
         deadline: float | None = None,
     ) -> JobGroup:
-        """Open a detached, top-level scope — the explicit fire-and-forget entry.
+        """Open a detached, top-level scope: the explicit fire-and-forget entry.
 
         Behaves like 'group()' but documents intent: a root group stands on its
         own instead of nesting. Spawning into it without 'async with'
-        (``await q.root_group().spawn(...)``) is the one sanctioned way to detach
-        work from any enclosing scope, and it is the unit a heartbeat reaper will
-        watch in a later phase.
+        (``await q.root_group().spawn(...)``) is the one sanctioned way to
+        detach work from any enclosing scope.
         """
         return JobGroup(self._backend, on_error=on_error, deadline=deadline)

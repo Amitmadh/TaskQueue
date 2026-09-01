@@ -1,4 +1,4 @@
-"""Phase 2 JobGroup — the executable spec for structured-concurrency scopes.
+"""JobGroup: the executable spec for structured-concurrency scopes.
 
 This is the headline of Phase 2. These tests are the spec for the scope
 behaviour and pass against the current implementation ("tests are the spec").
@@ -9,12 +9,12 @@ API (as implemented):
       deadline : seconds; the whole scope is cancelled when it elapses
   async with group as g:
       handle = await g.spawn(task, *args, **kwargs)   # -> JobHandle
-  __aexit__ does NOT return until every spawned child is terminal (the join).
+  __aexit__ does not return until every spawned child is terminal (the join).
   Failures surface as a builtin ExceptionGroup raised out of the `async with`.
   A cancelled child ends in JobStatus.CANCELLED (see test_worker_cancellation).
 
-Invariant under test throughout: no orphans. When the scope exits — cleanly,
-by failure, by body exception, or by deadline — every child it spawned must be
+Invariant under test throughout: no orphans. However the scope exits (cleanly,
+by failure, by body exception, or by deadline), every child it spawned must be
 in a terminal state, never left RUNNING.
 """
 
@@ -266,8 +266,8 @@ async def test_a_task_can_open_its_own_scope(queue: Queue) -> None:
     means. Untested until now, despite being the headline of the README.
 
     Note the pool width. A parent occupies a worker slot for as long as it waits
-    on its children, so the pool has to hold the parent AND at least one child —
-    at 'concurrency=1' this deadlocks outright, with the parent holding the only
+    on its children, so the pool has to hold the parent and at least one child.
+    At 'concurrency=1' this deadlocks outright, with the parent holding the only
     slot and no child able to be claimed.
     """
 
@@ -289,13 +289,13 @@ async def test_a_task_can_open_its_own_scope(queue: Queue) -> None:
 async def test_cancelling_a_parent_job_cancels_the_children_it_spawned(
     queue: Queue,
 ) -> None:
-    """The guarantee crosses the job boundary, not just the process boundary.
+    """The guarantee crosses the job boundary as well as the process boundary.
 
     Cancelling the parent interrupts its task, which lands as a 'CancelledError'
-    inside its scope's join — the one arm of '__aexit__' that exists for this —
+    inside its scope's join, in the one arm of '__aexit__' that exists for this,
     and that arm is what tears the children down. Without it the parent reports
-    cancelled while the work it started runs on, which is precisely the orphan
-    this library claims not to produce.
+    cancelled while the work it started runs on, which is the orphan this
+    library claims not to produce.
     """
     running: list[int] = []
     stopped: list[int] = []
@@ -333,9 +333,9 @@ async def test_cancelling_a_parent_job_cancels_the_children_it_spawned(
         with pytest.raises(JobCancelled):
             await asyncio.wait_for(handle.result(), 3)
 
-        # Waited for, not assumed. The parent's record goes terminal as soon as
-        # its own task is cancelled, which is BEFORE the children it spawned have
-        # finished unwinding — on Redis the extra round trips hide that gap, on
+        # Waited for rather than assumed. The parent's record goes terminal as soon
+        # its own task is cancelled, before the children it spawned have
+        # finished unwinding. On Redis the extra round trips hide that gap, on
         # MemoryBackend they do not, and an assertion here read straight after
         # 'result()' sees an empty list on one backend and a full one on the
         # other.
@@ -344,9 +344,9 @@ async def test_cancelling_a_parent_job_cancels_the_children_it_spawned(
                 break
             await asyncio.sleep(0.02)
 
-        # Asserted INSIDE the pool. Leaving the 'async with' cancels the worker
+        # Asserted inside the pool. Leaving the 'async with' cancels the worker
         # loops, which cancels the children's tasks and fills this list for a
-        # reason that has nothing to do with the scope — the test would then
+        # reason that has nothing to do with the scope, so the test would then
         # pass with the guard it exists for removed.
         assert sorted(stopped) == [0, 1, 2], (
             f"cancelling the parent did not reach its children: {stopped}"
@@ -358,9 +358,9 @@ async def test_a_fail_fast_scope_reports_only_what_broke_it(queue: Queue) -> Non
 
     The siblings a scope cancels raise 'JobCancelled' in their waiters. Recorded
     as failures they land in the same 'BaseExceptionGroup' as the error that
-    actually broke the scope — where an 'except*' on the real exception type
+    actually broke the scope, where an 'except*' on the real exception type
     cannot match them, so they escape as an unhandled residual group and crash
-    the very 'try' that was written to catch the failure. 'asyncio.TaskGroup'
+    the 'try' that was written to catch the failure. 'asyncio.TaskGroup'
     propagates what broke it, not the cancellations it issued in response, and a
     scope that claims to work the same way has to do the same.
 

@@ -56,8 +56,9 @@ class MemoryBackend(Backend):
         # result() waiters once the job has reached a terminal state.
         if done:
             # Terminal state reached: wake any result() waiters, then drop the
-            # per-job synchronization primitives — neither the done-event nor the
-            # cancel-event is ever needed again. The record is kept as the result.
+            # per-job synchronization primitives, since neither the done-event
+            # nor the cancel-event is needed again. The record is kept as the
+            # result.
             event = self._events.pop(job_id, None)
             if event is not None:
                 event.set()

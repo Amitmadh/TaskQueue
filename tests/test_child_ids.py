@@ -1,7 +1,7 @@
 """A task body that runs twice must not fork its subtree.
 
-At-least-once delivery means any task body can run twice — a reaper redelivers
-after a worker dies, and Phase 5's retries will re-run bodies on purpose. A leaf
+At-least-once delivery means any task body can run twice: a reaper redelivers
+after a worker dies, and retries will re-run bodies on purpose. A leaf
 task only has to be idempotent in its own effects, but **a spawning task has an
 enqueue as a side effect**, and an enqueue that is not deduped creates a second
 set of children while the first set is still running, owned by nobody.
@@ -31,7 +31,7 @@ pytestmark = pytest.mark.timeout(10)
 
 
 def _running(job_id: str) -> JobContext:
-    """A fresh context for the same job — one body, run once."""
+    """A fresh context for the same job: one body, run once."""
     return JobContext(job_id, None, "parent", attempts=1)
 
 
@@ -39,11 +39,11 @@ def _running(job_id: str) -> JobContext:
 async def test_a_re_run_body_spawns_the_same_child_ids(queue: Queue) -> None:
     """The whole point: run the same body twice, get the same children.
 
-    Two scopes, deliberately. The seed cannot contain the scope's id — 'group()'
-    mints a fresh uuid4 on every construction, so a scope inside a re-running
-    body is not the scope it was — and once the ordinal is per-BODY rather than
-    per-scope, the second scope must not restart it at zero either. Both halves
-    of that are asserted below: four distinct ids, and the same four again.
+    Two scopes, deliberately. The seed cannot contain the scope's id, because
+    'group()' mints a fresh uuid4 on every construction, so a scope inside a
+    re-running body is not the scope it was. And once the ordinal is per body
+    rather than per scope, the second scope must not restart it at zero either.
+    Both halves are asserted below: four distinct ids, and the same four again.
     """
 
     @queue.task
@@ -115,7 +115,7 @@ async def test_enqueue_ignores_an_id_it_already_knows(
     """The second half. Without it, derived ids just overwrite each other.
 
     Asserted through 'claim', because "did not enqueue" has to mean *no second
-    queue entry* — an implementation that skipped the record write but still
+    queue entry*: an implementation that skipped the record write but still
     pushed the id would leave a job that is claimed twice.
     """
     backend = queue.backend
@@ -133,15 +133,15 @@ async def test_a_re_run_body_does_not_run_its_children_twice(queue: Queue) -> No
     """The consequence, end to end: the same children, executed once.
 
     The derivation test above proves the ids match; this proves that matching
-    ids mean the work is not done twice — which is the whole point, and which
-    fails the moment either half of the slice is removed.
+    ids mean the work is not done twice, and it fails the moment either half of
+    the slice is removed.
 
     The body is run twice directly rather than by redelivering a live job. A
-    'release' on a parent that is still executing leaves TWO bodies of one job
-    alive at once, and they then contend for the same children's results —
-    'take_result' is single-consumer — which is a real open question about this
-    design but not the thing under test here. What a reaper actually produces is
-    a body whose predecessor is *gone*, and that is what this models.
+    'release' on a parent that is still executing leaves two bodies of one job
+    alive at once, and they then contend for the same children's results, since
+    'take_result' is single-consumer. That is an open question about this design
+    but not the thing under test here. What a reaper actually produces is a body
+    whose predecessor is *gone*, and that is what this models.
     """
     runs: list[int] = []
 
@@ -163,9 +163,9 @@ async def test_a_re_run_body_does_not_run_its_children_twice(queue: Queue) -> No
             current_job.reset(token)
 
     async with queue.worker(concurrency=2):
-        # Settle and assert INSIDE the pool, and BEFORE reading any result.
+        # Settle and assert inside the pool, and before reading any result.
         # Leaving the pool cancels whatever is still queued, and 'take_result'
-        # frees the record a duplicate claim would need — either one turns a
+        # frees the record a duplicate claim would need. Either one turns a
         # second execution into a no-op and lets this pass with the guard it
         # exists for removed.
         await asyncio.sleep(0.3)
@@ -177,9 +177,9 @@ async def test_a_re_run_body_does_not_run_its_children_twice(queue: Queue) -> No
 async def test_two_jobs_running_at_once_each_see_their_own(queue: Queue) -> None:
     """Concurrency is why the context is a 'ContextVar' and not a module global.
 
-    A pool runs 'concurrency' bodies in ONE event loop, so a global would hold
+    A pool runs 'concurrency' bodies in one event loop, so a global would hold
     whichever job started most recently: a body that spawns after an await would
-    derive its children from a SIBLING's id, and the ids would still look
+    derive its children from a sibling's id, and the ids would still look
     perfectly deterministic while belonging to the wrong parent. Both parents
     here are deliberately parked at a barrier so neither can spawn until the
     other is also live.
@@ -217,7 +217,7 @@ async def test_a_task_can_see_the_job_it_is_running_as(queue: Queue) -> None:
     """The context is set, and it is set before the job body starts.
 
     'Worker._process' has to set it before 'create_task', because a task copies
-    the context at creation — set it afterwards and the body sees nothing.
+    the context at creation; set it afterwards and the body sees nothing.
     """
     seen: list[JobContext | None] = []
 

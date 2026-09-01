@@ -35,7 +35,7 @@ class Backend(Protocol):
 
         Leasing transitions the job QUEUED -> RUNNING and increments the
         record's 'attempts' counter in the same atomic step.
-        The returned record is a detached copy — mutating it must not corrupt
+        The returned record is a detached copy; mutating it must not corrupt
         stored state. The lease is acked by a terminal 'save(done=True)' or
         nacked by 'release'.
         """
@@ -44,7 +44,7 @@ class Backend(Protocol):
     async def get_job(self, job_id: str) -> dict[str, Any]:
         """Return a detached copy of the job's stored record.
 
-        Raises 'KeyError' if the job is unknown — never enqueued, or already
+        Raises 'KeyError' if the job is unknown: never enqueued, or already
         taken.
         """
         ...
@@ -65,18 +65,19 @@ class Backend(Protocol):
         """Nack an in-flight lease: return a RUNNING job to QUEUED for redelivery.
 
         A no-op if the job is not currently leased (e.g. already terminal), so a
-        double release — a graceful shutdown racing a reaper — is harmless.
+        double release (a graceful shutdown racing a reaper) is harmless.
         """
         ...
 
     async def take_result(self, job_id: str) -> dict[str, Any]:
-        """Block until the job is terminal, then return its record AND free it.
+        """Block until the job is terminal, then return its record and free it.
 
         Wakes on the signal raised by a terminal 'save(done=True)' (returning
         immediately if the job is already terminal), returns a detached copy of
-        the terminal record, and removes it from the store. so a networked
+        the terminal record, and removes it from the store, so a networked
         backend delivers the result and frees it in one round-trip.
-        Single-consumer: the record is gone afterward. Raises if the job is unknown.
+        Single-consumer: the record is gone afterward. Raises if the job is
+        unknown.
         """
         ...
 
@@ -85,12 +86,12 @@ class Backend(Protocol):
 
         Durably flags the job (so a worker that claims it later can skip it) and
         notifies any worker already running it via 'wait_cancel'. An idempotent
-        no-op on a job that is already finished or unknown — completion wins.
+        no-op on a job that is already finished or unknown; completion wins.
         """
         ...
 
     async def request_cancel_many(self, job_ids: list[str]) -> None:
-        """Request cancellation of several jobs in one call — a batch
+        """Request cancellation of several jobs in one call: a batch
         'request_cancel'.
 
         Each id follows the 'request_cancel' contract (idempotent; a no-op on a
@@ -126,9 +127,9 @@ class Backend(Protocol):
 
         Must be a no-op while this worker still holds leases: the liveness entry
         is the only thing that points a reaper at its processing list, so
-        withdrawing early strands those jobs where nothing will ever look for
-        them. Best-effort -- a shutdown that cannot reach the backend falls back
-        to the TTL, which is what the reaper is for.
+        withdrawing early strands those jobs where nothing will look for them.
+        Best-effort; a shutdown that cannot reach the backend falls back to the
+        TTL, which is what the reaper is for.
         """
         ...
 
@@ -141,7 +142,7 @@ class Backend(Protocol):
         no-op for single-process backends, which cannot outlive their own
         leases.
 
-        Requeuing does not touch 'attempts' — see 'claim', which counts each
+        Requeuing does not touch 'attempts'; see 'claim', which counts each
         delivery as it happens.
         """
         ...

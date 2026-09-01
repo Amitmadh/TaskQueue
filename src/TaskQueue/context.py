@@ -14,11 +14,12 @@ class JobContext:
         self._spawns = 0
 
     def next_spawn(self) -> int:
-        """Ordinal of the next spawn made by this BODY, not by any one scope.
+        """Ordinal of the next spawn made by this job body.
 
-        Per body, because a scope's id is a fresh uuid4 on every re-run and so
-        cannot appear in a seed that has to survive one. Counting here rather
-        than per scope also stops two sequential scopes from both claiming 0.
+        The count is per body rather than per scope: a scope's id is a fresh
+        uuid4 on every re-run, so it cannot appear in a seed that has to
+        survive one, and counting per scope would let two sequential scopes
+        both claim 0.
         """
         ordinal = self._spawns
         self._spawns += 1

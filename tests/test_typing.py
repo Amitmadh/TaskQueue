@@ -1,4 +1,4 @@
-"""Static type-safety spec — verified by PYRIGHT, not pytest.
+"""Static type-safety spec, verified by pyright rather than pytest.
 
 The whole point of the library is that the queue boundary preserves types, so
 this file is the executable spec for that guarantee. These functions are never
@@ -9,9 +9,9 @@ This file is type-checked by the project's default ``pyright`` run: pyproject's
 ``[tool.pyright]`` lists it explicitly in ``include`` under strict mode with
 ``reportUnnecessaryTypeIgnoreComment = "error"``. That makes the negative cases
 self-enforcing: every ``# pyright: ignore`` below is load-bearing, so if a
-wrong-typed ``.spawn()`` call ever STOPS being a type error, the now-unnecessary
-ignore fails the build — the regression guard for the ParamSpec guarantee. (The
-rest of ``tests/`` is intentionally not type-checked.)
+wrong-typed ``.spawn()`` call ever stops being a type error, the
+now-unnecessary ignore fails the build. That is the regression guard for the
+ParamSpec guarantee. (The rest of ``tests/`` is intentionally not type-checked.)
 
 The one pytest test here just confirms the module imports.
 """
@@ -59,10 +59,10 @@ async def _check_scoped_spawn_preserves_types() -> None:
         assert_type(await handle.result(), int)
 
 
-# --- negative cases: these MUST stay type errors -------------------------------
+# --- negative cases: these have to stay type errors ----------------------------
 # Each `pyright: ignore` is load-bearing under reportUnnecessaryTypeIgnoreComment:
 # if any of these calls ever type-checks, its ignore becomes unnecessary and the
-# typing pass fails — catching a regression in the ParamSpec guarantee.
+# typing pass fails, catching a regression in the ParamSpec guarantee.
 async def _check_rejects_wrong_arg_types() -> None:
     await q.root_group().spawn(add, "nope", "wrong")  # pyright: ignore[reportArgumentType]
 

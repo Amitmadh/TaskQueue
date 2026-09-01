@@ -1,20 +1,20 @@
-"""Lease and watch bookkeeping — the orderings that make a job recoverable.
+"""Lease and watch bookkeeping: the orderings that make a job recoverable.
 
 A worker holds two kinds of claim on a job: a *lease* (the id sitting on its
 `processing:{id}` list) and a *watch* (`wait_cancel`, telling it to stop). Both
 depend on bookkeeping that has to be in place before the thing it protects, and
 has to survive that thing going wrong. `reap` is the reason: it walks expired
-MEMBERS of the workers set and nothing else, so a lease its owner never
-registered for, or one held by a process that is alive and beating, is invisible
-to every reaper there will ever be — the job is not queued, not owned, and never
+members of the workers set and nothing else, so a lease its owner never
+registered for, or one held by a process that is alive and beating, is
+invisible to every reaper. The job is then not queued, not owned, and never
 redelivered.
 
-They live together rather than in `test_worker.py` because they are one family
-and each was written after a real failure of it, not from the docstring:
+They live together rather than in `test_worker.py` because they are one family,
+and each was written after a real failure of it:
 
 * the pool registered itself with `create_task`, racing the first ZADD against
-  the BLMOVE — measured claiming 4–17ms too early under load;
-* `asyncio.wait` cannot tell a watcher that RETURNED from one that RAISED, so a
+  the BLMOVE, and was measured claiming 4-17ms too early under load;
+* `asyncio.wait` cannot tell a watcher that returned from one that raised, so a
   dropped pubsub connection was read as a cancellation;
 * the shutdown `release` raised for a record whose result had been taken, and
   that exception replaced the CancelledError, letting the loop escape its own
@@ -47,7 +47,7 @@ pytestmark = pytest.mark.timeout(15)
 async def test_a_worker_registers_before_it_can_claim(queue: Queue) -> None:
     """No claim without a heartbeat first.
 
-    Asserted as call ORDER rather than as a zscore: a zscore has to be awaited,
+    Asserted as call order rather than as a zscore: a zscore has to be awaited,
     and that await is itself the yield that lets the upkeep loop beat, so the
     check would pass on timing rather than on the guarantee.
     """
@@ -78,7 +78,7 @@ async def test_the_pool_keeps_beating_until_the_last_lease_is_handed_back(
 ) -> None:
     """Deregistration is the mirror image of registration, and comes last.
 
-    `__aexit__` cancels the claim loops, waits for them, and only THEN stops the
+    `__aexit__` cancels the claim loops, waits for them, and only then stops the
     upkeep loop. Stopping upkeep first would let this worker's beat lapse while
     it is still handing leases back, and a peer would reclaim jobs that are
     still running here.
@@ -184,11 +184,11 @@ async def test_a_failed_release_does_not_swallow_the_shutdown_cancel(
 
     `release` raises `KeyError` for a record that no longer exists, and once
     `take_result` has consumed the result that is precisely the state. Raised
-    from inside the `except CancelledError` arm it REPLACES the CancelledError,
+    from inside the `except CancelledError` arm it replaces the CancelledError,
     so the loop exits by exception: `task.cancelled()` is False and every
     `gather(..., return_exceptions=True)` that collects it swallows the error
-    silently. The same applies when the backend is simply down — which is the
-    usual reason a pool is being torn down in the first place.
+    silently. The same applies when the backend is down, which is the usual
+    reason a pool is being torn down in the first place.
     """
     backend = queue.backend
     original_save = backend.save
@@ -240,9 +240,9 @@ def _flaky_claim_script(backend: RedisBackend) -> None:
 async def test_a_failed_claim_returns_the_lease_to_the_queue() -> None:
     """`claim` leases in two steps, and the second one can fail on its own.
 
-    BLMOVE moves the id onto this worker's processing list; a SECOND round trip
+    BLMOVE moves the id onto this worker's processing list; a second round trip
     marks the record RUNNING. An error there used to leave the id on the list
-    with the record still QUEUED — and since the worker survives the error and
+    with the record still QUEUED, and since the worker survives the error and
     keeps beating, no reaper ever walks that list. Redis-only: MemoryBackend has
     no lease to lose.
     """
@@ -297,9 +297,8 @@ def test_a_worker_refuses_a_heartbeat_too_close_to_the_ttl(interval: float) -> N
 
     'reap' presumes a worker dead once its beat is older than 'worker_ttl'. A
     pool beating no more often than the TTL is configured to have its own
-    running jobs handed to somebody else — the failure that got supervision cut,
-    arrived at deliberately. Checked in 'Worker.__init__' rather than only in
-    the CLI, so 'q.worker(...)' cannot be talked into it either.
+    running jobs handed to somebody else. Checked in 'Worker.__init__' rather
+    than only in the CLI, so 'q.worker(...)' cannot be talked into it either.
     """
     with pytest.raises(ConfigError, match="worker_ttl"):
         _redis_queue(30).worker(heartbeat_interval=interval)
@@ -315,8 +314,8 @@ def test_the_shipped_defaults_are_a_valid_pair() -> None:
     """Nothing else would catch a default that refuses its own worker.
 
     The two constants live in different modules and sit exactly on the boundary,
-    so raising either one alone makes 'q.worker()' — the no-argument call in
-    every quickstart — fail at construction.
+    so raising either one alone makes 'q.worker()', the no-argument call in
+    every quickstart, fail at construction.
     """
     assert (
         DEFAULT_WORKER_TTL_SECONDS

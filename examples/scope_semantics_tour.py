@@ -115,7 +115,7 @@ async def explicit_cancel() -> None:
 
 
 async def scope_deadline() -> None:
-    print("\n[5] deadline belongs to the scope, not the job")
+    print("\n[5] deadline belongs to the scope, not to the job")
     try:
         async with q.group(deadline=0.3) as g:
             await g.spawn(stocktake, 30.0)

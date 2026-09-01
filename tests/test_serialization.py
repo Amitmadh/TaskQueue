@@ -1,4 +1,4 @@
-"""Serialization spec — Jobs survive a cross-process round-trip.
+"""Serialization spec: Jobs survive a cross-process round-trip.
 
 Phase 1 (in-memory) keeps records in a dict and never crosses a process
 boundary, but the Job<->record contract is what Phase 3's Redis backend relies

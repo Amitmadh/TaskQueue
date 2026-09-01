@@ -119,7 +119,7 @@ async def test_root_group_spawn_round_trip(queue: Queue) -> None:
 
 
 async def test_worker_is_single_use(queue: Queue) -> None:
-    # A worker cannot be reused after it has exited — get a fresh one instead.
+    # A worker cannot be reused after it has exited; get a fresh one instead.
     worker = queue.worker()
     async with worker:
         pass
@@ -155,7 +155,7 @@ async def test_inflight_job_is_redelivered_on_shutdown(queue: Queue) -> None:
     # pool exited mid-flight: the job must be redelivered (QUEUED), not stranded
     assert await handle.status() == JobStatus.QUEUED
 
-    # a fresh worker completes it — at-least-once delivery
+    # a fresh worker completes it (at-least-once delivery)
     unblock.set()
     async with queue.worker():
         assert await asyncio.wait_for(handle.result(), 3) == 42

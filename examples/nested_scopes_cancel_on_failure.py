@@ -1,17 +1,17 @@
 """A checkout, run twice: once it goes through, once the card is declined.
 
 The Redis twin of ``examples/scope_semantics_tour.py``. Same scope code, same
-task decorator — the only difference is the backend on line one of the setup,
-which is the whole claim of the ``Backend`` Protocol. The worker pool runs in
+task decorator; the only difference is the backend on line one of the setup,
+which is what the ``Backend`` Protocol is for. The worker pool runs in
 this process for the sake of a single command; point
 ``taskqueue worker nested_scopes_cancel_on_failure:q`` at the same Redis from
 another terminal and the producer code below does not change at all.
 
 What each run is here to show:
 
-  run 1  three independent checks fan out into one scope and run CONCURRENTLY —
-         3s of wall clock for 6.5s of work — and the scope will not exit until
-         all three are terminal, so the dependent step that needs their results
+  run 1  three independent checks fan out into one scope and run concurrently,
+         3s of wall clock for 6.5s of work. The scope will not exit until all
+         three are terminal, so the dependent step that needs their results
          cannot start early.
 
   run 2  the payment fails half a second in. The scope cancels the two checks
@@ -21,11 +21,11 @@ What each run is here to show:
          3s the doomed work would have taken.
 
 ``check_inventory`` is a task that is itself a producer: it opens its own scope
-and spawns one job per warehouse. That nesting is the point of the model — the
-same ``async with`` works whether the code around it is your script or a job
-already running on a worker — and it is what makes run 2 worth watching. The
-cancellation does not stop at the job it was aimed at: it goes through
-``check_inventory`` into the warehouse jobs *it* spawned, and each one unwinds.
+and spawns one job per warehouse. The same ``async with`` works whether the
+code around it is your script or a job already running on a worker, and that
+nesting is what run 2 exercises. The cancellation does not stop at the job it
+was aimed at: it goes through ``check_inventory`` into the warehouse jobs *it*
+spawned, and each one unwinds.
 
 **A pool running nested tasks has to be wide enough to hold the parent and its
 children at once.** A parent occupies a worker slot for as long as it waits, so
@@ -84,11 +84,10 @@ async def check_warehouse(item: str, warehouse: str) -> int:
 async def check_inventory(item: str) -> str:
     """A task that is itself a producer.
 
-    Nothing here knows it is running on a worker rather than in a script, which
-    is the whole point: 'async with q.group()' is the same construct either way.
-    Cancel this job and its '__aexit__' unwinds, cancelling the warehouse jobs
-    it spawned — the guarantee crosses the job boundary, not just the process
-    boundary.
+    Nothing here knows it is running on a worker rather than in a script:
+    'async with q.group()' is the same construct either way. Cancel this job
+    and its '__aexit__' unwinds, cancelling the warehouse jobs it spawned, so
+    the guarantee crosses the job boundary as well as the process boundary.
     """
     async with q.group() as warehouses:
         counts = [await warehouses.spawn(check_warehouse, item, name) for name in STOCK]
@@ -141,7 +140,7 @@ async def checkout(amount: float) -> None:
             handles["shipping"] = await g.spawn(calculate_shipping, "Tel Aviv")
             say(f"spawned {len(handles)} checks; the scope now waits")
 
-        # Past this line every child is terminal AND succeeded — reaching here at
+        # Past this line every child is terminal and succeeded; reaching here at
         # all is the guarantee. Only now is it safe to use their results.
         say("all checks passed")
         order = await q.root_group().spawn(
@@ -167,10 +166,10 @@ async def main() -> None:
     await client.flushdb()  # pyright: ignore[reportUnknownMemberType]
     try:
         async with q.worker(concurrency=CONCURRENCY):
-            print(f"\nrun 1 — ${1299.99:,.2f}, under the ${CARD_LIMIT:,.0f} limit")
+            print(f"\nrun 1: ${1299.99:,.2f}, under the ${CARD_LIMIT:,.0f} limit")
             await checkout(1299.99)
 
-            print(f"\nrun 2 — ${2499.00:,.2f}, over the limit")
+            print(f"\nrun 2: ${2499.00:,.2f}, over the limit")
             await checkout(2499.00)
         print("\nworker pool stopped; done")
     finally:

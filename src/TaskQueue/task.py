@@ -22,7 +22,7 @@ class Task[**P, R]:
         self.func: Callable[P, Awaitable[R]] = func
         self.name: str = name
         self._backend: Backend = backend
-        # Accepted and stored, but not yet enforced — retry logic lands in Phase 5.
+        # Accepted and stored; retries are not enforced yet.
         self.max_retries: int = max_retries
         self._serializer: Serializer = serializer or JSONSerializer()
 

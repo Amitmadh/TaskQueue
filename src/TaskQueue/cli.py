@@ -46,7 +46,7 @@ def available(package_path: Iterable[str], suffix: str) -> list[str]:
 def resolve_queue(spec: str) -> Queue:
     """Import 'spec' ('<module>:<attr>') and return its Queue.
 
-    Importing the module and runs the '@q.task' decorators.
+    Importing the module runs the '@q.task' decorators.
     """
     module_name, _, queue_name = spec.partition(":")
     if not (module_name and queue_name):
@@ -77,11 +77,11 @@ async def run_worker(
     """Serve jobs until SIGINT/SIGTERM, then drain the pool.
 
     Shutdown is two-stage. The first signal stops claiming and waits for
-    in-flight jobs to finish. A second signal — or 'drain_timeout' elapsing —
+    in-flight jobs to finish. A second signal, or 'drain_timeout' elapsing,
     cancels them, and a job cancelled mid-run is 'release'd back to QUEUED for
-    redelivery. That fallback is correct at-least-once behaviour but discards
-    in-flight progress, which is exactly what the drain exists to avoid paying
-    for on an ordinary restart.
+    redelivery. That fallback is correct at-least-once behaviour, but it
+    discards in-flight progress, which is what the drain exists to avoid
+    paying for on an ordinary restart.
     """
     pool = queue.worker(concurrency=concurrency, heartbeat_interval=heartbeat_interval)
 
@@ -96,8 +96,8 @@ async def run_worker(
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop.set)
 
-    # Printed so a producer/worker task-name mismatch is one glance away: the
-    # names here are the exact strings this process can resolve a job back to.
+    # Printed so a producer/worker task-name mismatch is easy to spot: these
+    # are the exact strings this process can resolve a job back to.
     names = sorted(queue.task_registry)
     if names:
         logger.info("serving %d task(s): %s", len(names), ", ".join(names))

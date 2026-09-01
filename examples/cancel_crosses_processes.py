@@ -4,13 +4,13 @@ The store's catalogue reprice: one long job, started here and running on a
 worker somewhere else, called off from this process halfway through.
 
 Two acts. The first is the ordinary path: `handle.cancel()` writes a flag and
-publishes, the worker's watcher wakes, and the job stops. The second removes the
-message — the flag is set by hand and nothing is published, which is what a
-dropped `PUBLISH` looks like from the worker's side — and the job still stops, one
+publishes, the worker's watcher wakes, and the job stops. The second removes
+the message: the flag is set by hand and nothing is published, which is what a
+dropped `PUBLISH` looks like from the worker's side. The job still stops, one
 poll interval later, because the waiting side re-reads the record instead of
 trusting the message to arrive.
 
-Self-contained: the worker subprocess imports THIS module (see TARGET), so the
+Self-contained: the worker subprocess imports this module (see TARGET), so the
 task registry and namespace used here cannot leak into the other examples.
 
 Run a real Redis first:  docker run --rm -p 6379:6379 redis
@@ -88,7 +88,7 @@ def say(message: str) -> None:
 def spawn_worker() -> "subprocess.Popen[bytes]":
     """Start a worker as a direct child of this process.
 
-    Deliberately NOT the 'taskqueue' console script: on Windows that is a
+    Deliberately not the 'taskqueue' console script: on Windows that is a
     launcher .exe that runs the interpreter as its own child, so a handle on it
     is a handle on the stub rather than on the worker. '-m TaskQueue' makes the
     worker the process we actually hold.
@@ -117,12 +117,13 @@ async def until_running(handle: JobHandle[str]) -> None:
 async def until_watching(handle: JobHandle[str]) -> None:
     """Block until the worker's cancel subscription exists on the server.
 
-    'wait_cancel' subscribes, reads 'request_cancel' ONCE, and only then parks on
-    the message. The job body starts running during that subscribe round trip, so
-    a flag set the instant the job starts can be answered by that one-shot read —
-    act two would then prove nothing about the poll. 'PUBSUB NUMSUB' is the
-    server confirming the subscription is live; the short settle after it covers
-    the single await between 'subscribe' returning and the flag being read.
+    'wait_cancel' subscribes, reads 'request_cancel' once, and only then parks
+    on the message. The job body starts running during that subscribe round
+    trip, so a flag set as the job starts can be answered by that one-shot
+    read, and act two would then prove nothing about the poll. 'PUBSUB NUMSUB'
+    is the server confirming the subscription is live; the short settle after
+    it covers the single await between 'subscribe' returning and the flag being
+    read.
     """
     channel = cancel_channel(handle.job_id)
     while True:
@@ -168,8 +169,8 @@ async def current_worker_id() -> str | None:
 async def act_one() -> None:
     say("--- act 1: handle.cancel() ------------------------------------------")
     # Detached on purpose. Inside 'async with q.group()' the scope's __aexit__
-    # joins its children, and a child that ends CANCELLED is a scope failure —
-    # correct behaviour, but it would raise a BaseExceptionGroup here and bury
+    # joins its children, and a child that ends CANCELLED is a scope failure.
+    # That is correct, but it would raise a BaseExceptionGroup here and bury
     # the one thing this act is about.
     handle = await q.root_group().spawn(reprice_catalog, JOB_SECONDS)
     say(f"producer| spawned job {handle.job_id[:8]} (would run for {JOB_SECONDS}s)")
@@ -179,7 +180,7 @@ async def act_one() -> None:
     say(f"producer| it is RUNNING, leased by worker {(worker_id or '?')[:8]}")
     await until_watching(handle)
 
-    say("producer| calling handle.cancel() -- flag written AND published")
+    say("producer| calling handle.cancel() -- flag written and published")
     await handle.cancel()
 
     waited = await until_cancelled(handle)

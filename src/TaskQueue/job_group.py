@@ -70,9 +70,9 @@ class JobGroup:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        # Local tasks now outlive every path through this method -- the
-        # per-child waiters, and possibly an in-flight cancel fan-out -- so the
-        # net that settles them wraps the whole body. Attached to the join
+        # Local tasks can outlive every path through this method: the per-child
+        # waiters, and possibly an in-flight cancel fan-out. The net that
+        # settles them therefore wraps the whole body; attached to the join
         # alone, the two early returns below would step straight past it.
         try:
             if exc_val is not None:
@@ -150,7 +150,7 @@ class JobGroup:
         """Leave no local task behind, whichever way the scope ended.
 
         The fan-out belongs here too: it is scheduled from a callback that
-        cannot await it, so this is the only place that knows it finished.
+        cannot await it, so this is where it gets collected.
         """
         for waiter in self._waiters:
             if not waiter.done():
@@ -195,16 +195,17 @@ class JobGroup:
             )
 
     async def cancel_siblings_mode(self) -> list[BaseException]:
-        # Wait until the first child fails (or all finish). On a failure, cancel the
-        # still-running siblings — the JOBS, via their handles, not just the local
-        # result() waiters — and drain them to terminal so none outlive the scope.
+        # Wait until the first child fails (or all finish). On a failure, cancel
+        # the still-running siblings (the jobs themselves, via their handles, and
+        # not only the local result() waiters) and drain them to terminal so none
+        # outlive the scope.
         _, pending = await asyncio.wait(
             self._waiters, return_when=asyncio.FIRST_EXCEPTION
         )
         if pending:
-            # The watcher fans out the instant a child fails, so by now it has
+            # The watcher fans out as soon as a child fails, so by now it has
             # usually happened already. This is the backstop for a failure that
-            # lands exactly as we arrive.
+            # lands just as we arrive.
             if not self._cancelling:
                 self._cancelling = True
                 logger.debug(

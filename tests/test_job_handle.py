@@ -1,4 +1,4 @@
-"""JobHandle as a typed promise — event-driven waiting, raising on failure.
+"""JobHandle as a typed promise: event-driven waiting, raising on failure.
 
 Unit tests: JobHandle is driven directly against a backend, no Worker involved,
 isolating the handle's behavior from the run loop. A handle is constructed with

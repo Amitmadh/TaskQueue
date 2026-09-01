@@ -7,7 +7,7 @@ importing a module that no longer exists and the whole suite still goes green
 class of breakage - but only when the type checker is run. These tests keep the
 guarantee in the test suite, where it holds on every `pytest` run.
 
-They deliberately do NOT execute the examples — several run a worker pool at
+They deliberately do not execute the examples: several run a worker pool at
 import time, which would make the suite slow and non-deterministic. Instead each
 file is parsed and its TaskQueue imports are resolved: the module must be
 importable, and every name imported from it must actually exist. That is exactly

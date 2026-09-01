@@ -55,7 +55,7 @@ class Job:
         'request_cancel' as "0"/"1") so the backend can set them without deserializing;
         only the user payload (args/kwargs) and the result are opaque
         'bytes' blobs from the serializer.
-        'error' and 'result' are written only once populated — an absent key
+        'error' and 'result' are written only once populated; an absent key
         means None.
         """
         record: dict[str, str | bytes] = {

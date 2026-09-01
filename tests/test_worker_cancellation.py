@@ -1,4 +1,4 @@
-"""Phase 2 worker-side cancellation — the executable spec for how a running job
+"""Worker-side cancellation: the executable spec for how a running job
 reacts to request_cancel, plus the related JobHandle behaviour.
 
 Contract encoded here:
@@ -60,7 +60,7 @@ async def test_cancel_running_job_reaches_cancelled(queue: Queue) -> None:
 
 
 async def test_cancel_wakes_result_waiter(queue: Queue) -> None:
-    # result() must not hang once the job is cancelled — the CANCELLED write is
+    # result() must not hang once the job is cancelled: the CANCELLED write is
     # terminal and fires the done-event.
     started = asyncio.Event()
     forever = asyncio.Event()
@@ -188,13 +188,13 @@ async def test_result_on_cancelled_job_raises(queue: Queue) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# guards #1 — terminal write must not strand a job                            #
+# guards #1: a terminal write must not strand a job                          #
 # --------------------------------------------------------------------------- #
 async def test_unserializable_result_fails_job_instead_of_hanging(
     queue: Queue,
 ) -> None:
     # The default JSONSerializer cannot encode a set, so to_record() raises during
-    # the terminal write. Because _save runs INSIDE _process's try/except, that
+    # the terminal write. Because _save runs inside _process's try/except, that
     # error is caught and the job ends FAILED, so result() raises promptly instead
     # of hanging forever.
     @queue.task
@@ -215,7 +215,7 @@ async def test_unserializable_result_fails_job_instead_of_hanging(
 
 
 # --------------------------------------------------------------------------- #
-# guards #2 — the cancel-waiter task must not leak on the failure path        #
+# guards #2: the cancel-waiter task must not leak on the failure path        #
 # --------------------------------------------------------------------------- #
 def _pending_wait_cancel_tasks() -> list[asyncio.Task[object]]:
     out: list[asyncio.Task[object]] = []

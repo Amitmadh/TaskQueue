@@ -115,8 +115,8 @@ class Worker:
                 await self._process(record)
             except asyncio.CancelledError:
                 # Interrupted before a terminal write (shutdown/cancel): hand the
-                # lease back so the job is redelivered, never stranded in RUNNING.
-                # Guarded, because the release can legitimately fail.
+                # lease back so the job is redelivered instead of stranded in
+                # RUNNING. Guarded, because the release can legitimately fail.
                 try:
                     await asyncio.shield(self._backend.release(record["id"]))
                     logger.info(
@@ -138,8 +138,8 @@ class Worker:
                     )
                 raise
             except Exception:
-                # A poison record (failed deserialize/save) must not kill the
-                # worker and silently shrink the pool. Log and keep serving.
+                # A poison record (failed deserialize/save) would otherwise kill
+                # the worker and silently shrink the pool. Log and keep serving.
                 logger.exception("unexpected error while processing job; continuing")
                 continue
 

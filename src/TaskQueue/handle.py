@@ -38,7 +38,7 @@ class JobHandle[R]:
 
     async def _consume(self) -> Job:
         # Await the terminal outcome once, cache it on the handle, and free the
-        # backing record. Repeat and concurrent callers share the cached job;
+        # backing record. Repeat and concurrent callers share the cached job.
         if self._job is not None:
             return self._job
         async with self._lock:

@@ -131,7 +131,7 @@ class TestJobToRecord:
 
     def test_unfinished_job_has_no_result_blob(self) -> None:
         # Until a job completes, the result key is absent from the record,
-        # regardless of status — nothing has been produced yet.
+        # regardless of status: nothing has been produced yet.
         for status in (JobStatus.CREATED, JobStatus.QUEUED, JobStatus.RUNNING):
             j = Job(task_name="a", status=status)
             assert "result" not in j.to_record(SER)

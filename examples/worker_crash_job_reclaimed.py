@@ -4,7 +4,7 @@ The store's packing line: two orders are being packed when the machine doing one
 of them dies. Nobody re-submits anything -- a peer notices the stopped
 heartbeat, takes the lease back, and the order is packed by the other worker.
 
-Self-contained: the worker subprocesses import THIS module (see TARGET), so the
+Self-contained: the worker subprocesses import this module (see TARGET), so the
 fast worker_ttl used here cannot leak into the other examples.
 
 Two processes, so two logging controls: 'basicConfig' at the bottom sets the
@@ -21,8 +21,8 @@ default, because a beat has to fit into the TTL three times over.
 
 # redis-py annotates most client methods with '**kwargs: Unknown', so under a
 # strict type checker every single call to them is a partially-unknown type.
-# That is the library's typing, not this file's: switch the rule off here rather
-# than hang an ignore comment on each line (src/ does the latter, per call).
+# That comes from the library's annotations, so switch the rule off for this
+# file rather than hang an ignore comment on each line (src/ does the latter).
 # pyright: reportUnknownMemberType=false
 
 import asyncio
@@ -56,13 +56,13 @@ HEARTBEAT_INTERVAL = 1
 WORKER_TTL = 4
 
 # Passed on the workers' command line: they are separate processes, so nothing
-# this file does to its own root logger reaches them. Note the CLI applies this
-# to the ROOT logger in the worker, so 'debug' also turns on redis-py's and
-# asyncio's own chatter, not just TaskQueue's.
-# 'warning', not 'info': at 'info' two worker processes narrate their own
-# startup over this file's story, on a wall clock while everything else here is
-# relative seconds. The one line worth keeping - the reaper announcing the
-# requeue - is replaced by the monitor below, which sees the same event from
+# this file does to its own root logger reaches them. The CLI applies this to
+# the root logger in the worker, so 'debug' also turns on redis-py's and
+# asyncio's own chatter alongside TaskQueue's.
+# 'warning' rather than 'info': at 'info' two worker processes narrate their
+# own startup over this file's story, on a wall clock while everything else
+# here is relative seconds. The one useful line, the reaper announcing the
+# requeue, is replaced by the monitor below, which sees the same event from
 # outside and reports it on this demo's clock.
 WORKER_LOG_LEVEL = "warning"
 
@@ -71,7 +71,7 @@ WORKER_LOG_LEVEL = "warning"
 PACK_SECONDS = 3
 
 # How often the monitor reads the bookkeeping. It prints only when something
-# changed, so polling faster than the heartbeat buys precision, not noise.
+# changed, so polling faster than the heartbeat buys precision without noise.
 POLL_SECONDS = 0.4
 
 # A beat between the startup banner and the first narrated line. It sits before
@@ -158,9 +158,9 @@ async def register_worker(label: str, known: set[str]) -> str:
 def spawn_worker() -> "subprocess.Popen[bytes]":
     """Start a worker as a direct child of this process.
 
-    Deliberately NOT the 'taskqueue' console script: on Windows that is a
+    Deliberately not the 'taskqueue' console script: on Windows that is a
     launcher .exe that runs the interpreter as its own child, so Popen.kill()
-    would kill the stub and leave the real worker alive - still heartbeating,
+    would kill the stub and leave the real worker alive, still heartbeating and
     so never reaped, and this demo would hang forever. '-m TaskQueue'
     makes the worker the process we actually hold a handle to.
     """
@@ -203,8 +203,8 @@ async def snapshot() -> Bookkeeping:
 
     def render(worker_id: str, score: float) -> str:
         # A worker beating on schedule is just its label. One that has gone
-        # quiet carries how long for, so the TTL running out is something you
-        # watch happen rather than infer from the moment the line changes.
+        # quiet carries how long for, so the TTL running out is visible as it
+        # happens instead of having to be inferred from the line changing.
         age = now - int(score)
         label = worker_label(worker_id)
         return label if age <= HEARTBEAT_INTERVAL else f"{label}(silent {age}s)"
@@ -312,8 +312,8 @@ async def main() -> None:
     print(f"worker B is up ({worker_b_id[:6]})", flush=True)
     await asyncio.sleep(SETTLE_SECONDS)
 
-    # Both are up: start the clock at the part worth watching rather than at
-    # two interpreter startups.
+    # Both are up: start the clock at the interesting part rather than at two
+    # interpreter startups.
     t0 = time.monotonic()
     say(
         f"worker A = {worker_a_id[:6]} (pid {worker_a.pid}), "

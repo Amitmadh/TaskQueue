@@ -1,11 +1,11 @@
-"""CLI spec — argument parsing, target resolution, and process lifecycle.
+"""CLI spec: argument parsing, target resolution, and process lifecycle.
 
-Almost all of this runs in-process: `build_parser` and `resolve_queue` are split
-out of `main` precisely so the interesting behaviour is reachable without
-spawning anything. One subprocess test covers what cannot be faked — that the
-*installed console script* starts a pool and stops on a signal, which is also
-the only way to exercise the `sys.path` insertion (a console script does not put
-the working directory on the path, unlike ``python -m``).
+Almost all of this runs in-process. `build_parser` and `resolve_queue` are
+split out of `main` so the interesting behaviour is reachable without spawning
+anything. One subprocess test covers what cannot be faked: that the *installed
+console script* starts a pool and stops on a signal, which is also the only way
+to exercise the `sys.path` insertion (a console script does not put the working
+directory on the path, unlike ``python -m``).
 
 The entry-point test is the one nothing else can catch: a typo in
 ``[project.scripts]`` is invisible to ruff, pyright and every other test here,
@@ -237,9 +237,9 @@ def test_both_halves_of_the_target_are_required(
 ) -> None:
     # Every malformed spec must surface as TargetError, which main() turns into
     # a one-line message and exit 1. The empty-module cases are the sharp ones:
-    # they reach importlib.import_module(""), which raises ValueError — not
-    # ImportError — so a guard that lets them through escapes resolve_queue's
-    # handler entirely and reaches the user as a traceback.
+    # they reach importlib.import_module(""), which raises ValueError rather
+    # than ImportError, so a guard that lets them through escapes
+    # resolve_queue's handler entirely and reaches the user as a traceback.
     module_factory("cli_malformed", _ONE_QUEUE)
     with pytest.raises(TargetError, match="invalid target"):
         resolve_queue(spec)
@@ -424,7 +424,7 @@ def test_second_signal_abandons_the_drain(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# liveness settings — the rule itself lives with 'Worker' now
+# liveness settings. The rule itself lives with 'Worker'
 # (tests/test_lease_invariants.py); what is CLI-specific is the exit code.
 # --------------------------------------------------------------------------
 

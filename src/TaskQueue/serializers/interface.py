@@ -3,7 +3,7 @@ from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class Serializer(Protocol):
-    """Codec for the opaque blobs in a record — the user payload (args/kwargs)
+    """Codec for the opaque blobs in a record: the user payload (args/kwargs)
     and the result.
 
     The contract is round-trip fidelity: `loads(dumps(obj))` reproduces `obj`

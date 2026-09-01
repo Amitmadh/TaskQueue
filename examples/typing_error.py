@@ -10,7 +10,7 @@ This project sets `reportUnnecessaryTypeIgnoreComment = "error"`, so that
 comment is only allowed to stay while the line really is an error: if the
 ParamSpec guarantee ever regresses and this call starts type-checking, the
 ignore becomes unnecessary and the typing pass fails. Delete the comment to see
-the error itself — `docs/media/type_hints.png` is that view.
+the error itself; `docs/media/type_hints.png` is that view.
 
 Not meant to be run. There is no worker here, so the scope would only reach its
 deadline. `tests/test_typing.py` makes the same assertion for a missing

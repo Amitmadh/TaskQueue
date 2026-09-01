@@ -9,17 +9,17 @@
 
 ![A checkout run twice. The first goes through; the second is declined half a second in, and the scope cancels the two checks that are still running instead of letting them finish.](docs/media/nested_scopes_cancel_on_failure.gif)
 
-<sub>`examples/nested_scopes_cancel_on_failure.py` — run 1 fans three checks out into one scope and waits for all of them; run 2 fails fast, and the wall clock is the point.</sub>
+<sub>`examples/nested_scopes_cancel_on_failure.py`: run 1 fans three checks out into one scope and waits for all of them; run 2 fails fast. Compare the wall clock.</sub>
 
 ---
 
 ## What's different
 
-**Structured concurrency, distributed.** Built on the same idea as `asyncio.TaskGroup` and Trio's nurseries, extended across processes. Jobs are spawned into a *scope* (`JobGroup`). The scope's `async with` block doesn't exit until every child reaches a terminal state. If one child fails, its siblings are cancelled and the failure propagates up the scope tree. Cancellation crosses process boundaries: `handle.cancel()` here stops a job already running on a worker over there. If a *worker* process dies, a heartbeat-based reaper returns its in-flight jobs to the queue so nothing is stranded. What it deliberately does **not** do is cancel a dead *producer's* children — see [What survives a crash](#what-survives-a-crash-and-what-doesnt).
+**Structured concurrency, distributed.** Built on the same idea as `asyncio.TaskGroup` and Trio's nurseries, extended across processes. Jobs are spawned into a *scope* (`JobGroup`). The scope's `async with` block doesn't exit until every child reaches a terminal state. If one child fails, its siblings are cancelled and the failure propagates up the scope tree. Cancellation crosses process boundaries: `handle.cancel()` here stops a job already running on a worker over there. If a *worker* process dies, a heartbeat-based reaper returns its in-flight jobs to the queue so nothing is stranded. What it deliberately does **not** do is cancel a dead *producer's* children. See [What survives a crash](#what-survives-a-crash-and-what-doesnt).
 
 **End-to-end type safety.** `@q.task` preserves the wrapped function's signature via `ParamSpec`, so `g.spawn(add, 2, 3)` is type-checked against `add`'s signature and `await handle.result()` is correctly typed as `int`. The library and its examples run under Pyright in strict mode.
 
-**Pluggable backends behind a `Protocol`.** The `Backend` interface is a `typing.Protocol`, not an ABC, so a different store (Redis, SQLite, Postgres) can be slotted in without inheriting from anything. Two are built: `MemoryBackend` for tests and single-process use, and `RedisBackend` for real deployments — `BLMOVE` into a per-worker processing list for reliable delivery, pub/sub for result and cancellation notification, Lua for every check-then-act guard. Both are held to the same conformance suite, which runs twice: once against each — part of a suite carrying close to three lines of test for every line of library code, which CI runs against a real Redis. SQLite comes after v1.0.
+**Pluggable backends behind a `Protocol`.** The `Backend` interface is a `typing.Protocol`, not an ABC, so a different store (Redis, SQLite, Postgres) can be slotted in without inheriting from anything. Two are built: `MemoryBackend` for tests and single-process use, and `RedisBackend` for real deployments: `BLMOVE` into a per-worker processing list for reliable delivery, pub/sub for result and cancellation notification, and Lua for every check-then-act guard. Both are held to the same conformance suite, which runs twice, once against each. The suite carries close to three lines of test for every line of library code, and CI runs it against a real Redis. SQLite comes after v1.0.
 
 ## Install
 
@@ -29,11 +29,11 @@ install from the repository:
 $ pip install "TaskQueue[redis] @ git+https://github.com/Amitmadh/TaskQueue"
 ```
 
-The core has no dependencies of its own; the `redis` extra pulls in the driver the Redis backend needs. Python 3.12+ — see [Requirements](#requirements).
+The core has no dependencies of its own; the `redis` extra pulls in the driver the Redis backend needs. Python 3.12+; see [Requirements](#requirements).
 
 ## Example
 
-Ten jobs run in parallel inside a scope. One fails — and instead of the other nine running to completion while you learn about it from the logs, the scope cancels them and raises the failure where you can catch it.
+Ten jobs run in parallel inside a scope. One fails, and instead of the other nine running to completion while you find out from the logs, the scope cancels them and raises the failure where you can catch it.
 
 ```python
 import asyncio
@@ -68,9 +68,9 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`namespace="demo"` fixes the task names to `demo.work` and `demo.boom` no matter how this file is loaded. Leave it out and names default to the module's import path, which is right for a module that is only ever imported — but a module you run as a script has no stable import path, so the decorator refuses to guess and raises `TaskNameError`.
+`namespace="demo"` fixes the task names to `demo.work` and `demo.boom` no matter how this file is loaded. Leave it out and names default to the module's import path, which is right for a module that is only ever imported. A module you run as a script has no stable import path, so the decorator refuses to guess and raises `TaskNameError`.
 
-The queue boundary keeps your types intact, too — `@q.task` preserves the signature via `ParamSpec`:
+The queue boundary keeps your types intact too: `@q.task` preserves the signature via `ParamSpec`:
 
 ```python
 async with q.group() as g:
@@ -86,11 +86,11 @@ The same class of mistake, caught in the editor rather than at runtime:
 
 When fail-fast isn't what you want: `group(on_error="collect")` runs every job and raises a `BaseExceptionGroup` of all failures, and `group(deadline=5.0)` cancels the whole scope if it outruns its deadline.
 
-Each of these behaviours — fan-out, fail-fast, explicit cancellation, deadlines, `on_error="collect"` — has a runnable version in [`examples/`](examples/), alongside demonstrations of cross-process cancellation and of a worker killed mid-job while a peer reclaims its work. [`examples/README.md`](examples/README.md) maps them and says which need a running Redis.
+Each of these behaviours (fan-out, fail-fast, explicit cancellation, deadlines, `on_error="collect"`) has a runnable version in [`examples/`](examples/), alongside demonstrations of cross-process cancellation and of a worker killed mid-job while a peer reclaims its work. [`examples/README.md`](examples/README.md) maps them and says which need a running Redis.
 
 ## Running a worker
 
-The example above runs its worker in-process, which is all the in-memory backend can do —
+The example above runs its worker in-process, which is all the in-memory backend can do:
 it keeps its queue in an `asyncio.Queue`, so a second process gets its own empty one. Point
 the same `Queue` at Redis and workers become separate processes on separate machines, with
 no change to the task or scope code above:
@@ -119,12 +119,12 @@ drain complete; stopping worker pool
 ```
 
 Ctrl-C drains rather than kills: the pool stops claiming and lets in-flight jobs finish.
-A second Ctrl-C, or `--drain-timeout` elapsing, cancels them — and a cancelled job is
+A second Ctrl-C, or `--drain-timeout` elapsing, cancels them, and a cancelled job is
 returned to the queue rather than lost. If a worker dies without either (`SIGKILL`, a
 power cut), its peers notice the missing heartbeat after `worker_ttl` and reclaim its
 jobs, so the guarantee is at-least-once in every case.
 
-The target is an import string — `<module>:<queue>` — not a set of `--backend` flags. A
+The target is an import string, `<module>:<queue>`, not a set of `--backend` flags. A
 worker has to import your task module regardless, because importing it is what runs the
 `@q.task` decorators, so your module stays the single place that decides which backend and
 serializer to use. That makes it impossible for a producer and a worker to disagree about
@@ -136,24 +136,25 @@ ships.
 A scope cancels its children whenever Python still runs: a sibling fails, the body
 raises, the deadline passes, or the owning task is cancelled. That covers every
 ordinary ending, including Ctrl-C on the process that owns the scope. Cancellation is
-delivered through the backend, so it reaches a job already running in another process
-— and a dropped notification costs latency, not correctness, because the waiting side
-re-reads the durable record rather than trusting the message to arrive.
+delivered through the backend, so it reaches a job already running in another
+process, and a dropped notification costs latency rather than correctness, because
+the waiting side re-reads the durable record instead of trusting the message to
+arrive.
 
-What it does not cover is a process killed outright — `SIGKILL`, OOM, a pulled plug.
+What it does not cover is a process killed outright (`SIGKILL`, OOM, a pulled plug).
 Its jobs keep running to completion and their results expire unread; you pay worker
 time for work nobody is waiting on. Detecting that automatically would mean inferring
 a producer's liveness from a heartbeat, and a beat that goes quiet because a process is
-busy looks exactly like one that went quiet because it died — so the cost of getting it
+busy looks the same as one that went quiet because it died, so the cost of getting it
 wrong is cancelling work that is still running. Wasting dead work is the cheaper
 mistake, and it is the one this library makes.
 
 Jobs that were *in flight on a dead worker* are a different matter, and those are
-reclaimed — that is the reaper, described above.
+reclaimed by the reaper described above.
 
 ![Two workers packing an order each. One is killed outright; its heartbeat goes silent, the surviving worker reaps the lease, and the order is requeued and packed on a second attempt.](docs/media/worker_crash_job_reclaimed.gif)
 
-<sub>`examples/worker_crash_job_reclaimed.py` — watch worker A's beat go stale, its lease return to the queue, and `attempts` for that order go from 1 to 2. Nothing re-submits it by hand.</sub>
+<sub>`examples/worker_crash_job_reclaimed.py`: watch worker A's beat go stale, its lease return to the queue, and `attempts` for that order go from 1 to 2. Nothing re-submits it by hand.</sub>
 
 ## Comparison with existing queues
 
@@ -178,36 +179,36 @@ If you're putting something in production today, use Celery. This project's valu
 
 ## Design Choices
 
-**No orphaned jobs.** Every job has a parent scope — enforced by the API, not by convention: enqueueing takes a scope id, so `spawn` is the only way in. The only way to "fire and forget" is to spawn into the explicit `root_group()`, which makes the choice visible in the code. This isn't a restriction — it's the property that makes everything else (reliable cancellation, error propagation, observability) tractable.
+**No orphaned jobs.** Every job has a parent scope, enforced by the API rather than by convention: enqueueing takes a scope id, so `spawn` is the only way in. The only way to "fire and forget" is to spawn into the explicit `root_group()`, which makes the choice visible in the code. That constraint is what makes everything else (reliable cancellation, error propagation, observability) tractable.
 
 **Errors have somewhere to go.** Failures are exceptions, raised from the `async with` block of the owning scope. You never have to grep logs to find out a background job died.
 
 **The Protocol is the contract.** Backends, serializers, and middleware are `typing.Protocol`s, not abstract base classes. Bring your own implementation without inheriting from anything.
 
-**Opinionated defaults, escape hatches everywhere.** Swapping `MemoryBackend` for `RedisBackend` is one line of config, and SQLite (post-v1.0) will be another. JSON is the default serializer — dependency-free and portable — with Pickle available when you need Python-native objects. Strict scopes are the default but `on_error="collect"` exists when you need it.
+**Opinionated defaults, escape hatches everywhere.** Swapping `MemoryBackend` for `RedisBackend` is one line of config, and SQLite (post-v1.0) will be another. JSON is the default serializer, dependency-free and portable, with Pickle available when you need Python-native objects. Strict scopes are the default but `on_error="collect"` exists when you need it.
 
 ## Roadmap
 
 > **Status:** pre-alpha, in active development. The API is still moving.
 
-I'm building this in vertical slices — each phase ends with a working demo and a git tag.
+I'm building this in vertical slices: each phase ends with a working demo and a git tag.
 
-- [x] **Phase 0** — Scaffolding: tooling, CI, lint, strict types, tests
-- [x] **Phase 1** — In-memory queue, `@task` with `ParamSpec`, basic worker
-- [x] **Phase 2** — `JobGroup` scopes, fail-fast/collect/ignore modes, deadlines, cooperative cancellation, nested scopes
-- [x] **Phase 3** — Redis backend with reliable delivery, multi-process workers, graceful drain, heartbeat-based reclaim of dead workers' jobs, CLI
-- [x] **Phase 4** — Cross-process cancellation, with a poll backup so a dropped notification cannot strand a waiter
-- [ ] **Phase 5** — Retries, structured logging, metrics, middleware
-- [ ] **Phase 6** — OpenTelemetry instrumentation
-- [ ] **Phase 7** — Documentation
-- [ ] **Post-v1.0** — SQLite backend (to validate the Protocol abstraction)
+- [x] **Phase 0**: scaffolding, tooling, CI, lint, strict types, tests
+- [x] **Phase 1**: in-memory queue, `@task` with `ParamSpec`, basic worker
+- [x] **Phase 2**: `JobGroup` scopes, fail-fast/collect/ignore modes, deadlines, cooperative cancellation, nested scopes
+- [x] **Phase 3**: Redis backend with reliable delivery, multi-process workers, graceful drain, heartbeat-based reclaim of dead workers' jobs, CLI
+- [x] **Phase 4**: cross-process cancellation, with a poll backup so a dropped notification cannot strand a waiter
+- [ ] **Phase 5**: retries, structured logging, metrics, middleware
+- [ ] **Phase 6**: OpenTelemetry instrumentation
+- [ ] **Phase 7**: documentation
+- [ ] **Post-v1.0**: SQLite backend (to validate the Protocol abstraction)
 
 See the [changelog](CHANGELOG.md) for what's actually done.
 
 ## Requirements
 
-- Python 3.12+ (for PEP 695 type-parameter syntax — `ExceptionGroup` and `TaskGroup` only need 3.11)
-- Optional: Redis 6.2+ for the Redis backend — `BLMOVE` and `ZRANGE ... BYSCORE` both need 6.2
+- Python 3.12+ (for PEP 695 type-parameter syntax; `ExceptionGroup` and `TaskGroup` only need 3.11)
+- Optional: Redis 6.2+ for the Redis backend, since `BLMOVE` and `ZRANGE ... BYSCORE` both need 6.2
 - Optional, planned (post-v1.0): SQLite 3.35+ for the SQLite backend
 - Optional, planned (Phase 6): OpenTelemetry SDK for distributed tracing
 
@@ -216,20 +217,21 @@ See the [changelog](CHANGELOG.md) for what's actually done.
 A quick tour of the pieces, in roughly the order they execute:
 
 - `Queue` is the user-facing facade. Holds the backend, the task registry, and creates scopes.
-- `Task` is what `@q.task` produces — a callable that keeps the original signature via `ParamSpec` and adds `.submit(group_id, job_id, ...)`, which `JobGroup.spawn` calls to enqueue.
+- `Task` is what `@q.task` produces: a callable that keeps the original signature via `ParamSpec` and adds `.submit(group_id, job_id, ...)`, which `JobGroup.spawn` calls to enqueue.
 - `Job` is the serialized unit of work that crosses the wire (id, task name, args, scope id, status).
 - `JobGroup` is the structured-concurrency scope. Its `__aexit__` blocks until all children finish or are cancelled.
 - `Backend` is the `Protocol` for persistence. Built: `MemoryBackend` and `RedisBackend`; SQLite comes after v1.0.
 - `Worker` pulls jobs from a backend and runs them, async-native, with a small executor that handles cancellation injection.
-- The reaper runs inside every worker. Each process writes its own timestamp into a `workers` sorted set every few seconds; any worker whose last beat is older than `worker_ttl` is presumed dead and its processing list is drained back onto the queue. It reclaims **leases** — a scope's children are cancelled by the scope itself, in the process that owns it.
+- The reaper runs inside every worker. Each process writes its own timestamp into a `workers` sorted set every few seconds; any worker whose last beat is older than `worker_ttl` is presumed dead and its processing list is drained back onto the queue. It reclaims **leases**; a scope's children are cancelled by the scope itself, in the process that owns it.
 
 [**`docs/architecture.md`**](docs/architecture.md) is the longer version, written now
 that Phase 4 has stopped the design moving. It covers the Redis-specific patterns properly:
 reliable delivery via per-worker processing lists, the two-step lease and everything that
 follows from it, subscribe-then-check plus the poll backup for race-free waits, the
-cancellation protocol, and why the reaper needs **no** distributed lock — the reclaim is a
-single atomic Lua script, so concurrent reapers cost a wasted round trip rather than a
-duplicated job, and a lock that expired mid-operation would be the only way to break that.
+cancellation protocol, and why the reaper needs **no** distributed lock: the reclaim is
+a single atomic Lua script, so concurrent reapers cost a wasted round trip rather than
+a duplicated job, and a lock that expired mid-operation would be the only way to break
+that.
 
 ## Inspiration
 
@@ -241,6 +243,11 @@ The structured-concurrency design owes an enormous debt to:
 - Temporal's workflow-as-code model, particularly the deterministic replay ideas
 
 Everything we got wrong is ours alone.
+
+## How this was built
+
+Developed with Claude for tests, code review, and the written material: documentation,
+code comments, and the changelog. The architecture and the design decisions are my own.
 
 ## License
 
