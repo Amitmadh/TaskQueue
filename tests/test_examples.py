@@ -1,9 +1,11 @@
 """Every example must reference a real, current public API.
 
-`examples/` is excluded from pyright and imported by nothing, so a rename in
-`src/` can leave an example importing a module that no longer exists and the
-whole suite still goes green (this happened when `backends/memory.py` became
-`backends/memory_backend.py`). These tests close that gap.
+`examples/` is imported by nothing, so a rename in `src/` can leave an example
+importing a module that no longer exists and the whole suite still goes green
+(this happened when `backends/memory.py` became `backends/memory_backend.py`).
+`examples/` is in pyright's `include` as of 2026-09-01, which catches the same
+class of breakage - but only when the type checker is run. These tests keep the
+guarantee in the test suite, where it holds on every `pytest` run.
 
 They deliberately do NOT execute the examples — several run a worker pool at
 import time, which would make the suite slow and non-deterministic. Instead each

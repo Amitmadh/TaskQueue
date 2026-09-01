@@ -63,11 +63,11 @@ select = [
 
 # pyright
 [tool.pyright]
-include = ["src", "tests/test_typing.py"]
-exclude = ["examples", "**/node_modules", "**/__pycache__", "**/.*", ".venv", ".venv-linux"]
+include = ["src", "tests/test_typing.py", "examples"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv", ".venv-linux"]
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = "error"
-extraPaths = ["./src/TaskQueue"]
+extraPaths = ["./src"]
 
 # pytest
 [tool.pytest.ini_options]

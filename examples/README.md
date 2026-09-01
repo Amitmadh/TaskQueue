@@ -16,6 +16,8 @@ read as one system rather than five unrelated toys.
 | [`cancel_crosses_processes.py`](cancel_crosses_processes.py) | `handle.cancel()` here stops a catalogue reprice running over there — and still does when the notification is lost | **Redis** |
 | [`worker_crash_job_reclaimed.py`](worker_crash_job_reclaimed.py) | `SIGKILL` a worker mid-order; a surviving peer reaps the lease and packs it | **Redis** |
 
+One file is not on that list. [`typing_error.py`](typing_error.py) is not meant to run — it holds a single call that must *not* type-check, pinned by a `# pyright: ignore` that the build only tolerates while the line really is an error. Its docstring explains the mechanism.
+
 ## Before you run the Redis three
 
 > **They call `flushdb()` on startup.** All three connect to `localhost:6379`

@@ -164,7 +164,7 @@ async def checkout(amount: float) -> None:
 
 
 async def main() -> None:
-    await client.flushdb()  # type: ignore
+    await client.flushdb()  # pyright: ignore[reportUnknownMemberType]
     try:
         async with q.worker(concurrency=CONCURRENCY):
             print(f"\nrun 1 — ${1299.99:,.2f}, under the ${CARD_LIMIT:,.0f} limit")
